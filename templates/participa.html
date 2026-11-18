@@ -1,52 +1,73 @@
-<!doctype html>
+{# T06 — Formulario público (mensaje burbuja + reflexión). Mobile first. #}
+{# Si T01 devuelve un error de validación (error_message), se vuelve a abrir
+   la pestaña del formulario enviado y se conservan los textos escritos. #}
+{% set en_mural = request.endpoint == 'crear_mural' %}
+{% set en_foro = request.endpoint == 'crear_foro' %}
+<!DOCTYPE html>
 <html lang="es">
 <head>
-  <meta charset="utf-8">
+  <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Participa</title>
-  <style>
-    :root { color-scheme: light; font-family: system-ui, sans-serif; }
-    body { margin: 0; background: #f7f3f5; color: #242126; }
-    main { width: min(100% - 2rem, 42rem); margin: 0 auto; padding: 2rem 0; }
-    h1 { font-size: 2rem; margin: 0 0 1rem; }
-    section { background: white; border-radius: 1rem; margin: 1rem 0; padding: 1.25rem; }
-    label { display: block; font-weight: 650; margin: 1rem 0 .4rem; }
-    textarea, input { box-sizing: border-box; width: 100%; padding: .8rem; border: 1px solid #777; border-radius: .5rem; font: inherit; }
-    textarea { min-height: 8rem; resize: vertical; }
-    button { min-height: 2.9rem; margin-top: 1rem; padding: .65rem 1rem; border: 0; border-radius: .5rem; background: #6a2854; color: white; font: inherit; font-weight: 700; cursor: pointer; }
-    .notice { color: #514750; }
-    .error { padding: .8rem; border-left: .25rem solid #a11; background: #fff0f0; }
-    @media (min-width: 40rem) { main { padding: 3rem 0; } section { padding: 1.5rem; } }
-  </style>
+  <meta name="theme-color" content="#4a1a6b">
+  <title>Participa · 25N</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/participa.css') }}">
 </head>
 <body>
-  <main>
-    <h1>Participa</h1>
-    <p class="notice">No uses nombres reales ni datos que identifiquen a nadie.</p>
+  <header class="cabecera">
+    <h1>25N · Deja tu mensaje</h1>
+    <p>Día Internacional para la Eliminación de la Violencia contra la Mujer</p>
+  </header>
+
+  <main class="contenido">
+    <p class="aviso" role="note">
+      <strong>Importante:</strong> No uses nombres reales ni datos que identifiquen a nadie.
+    </p>
+
     {% if error_message %}
-      <p class="error" role="alert">{{ error_message }}</p>
+    <p class="error" role="alert">{{ error_message }}</p>
     {% endif %}
 
-    <section>
-      <h2>Mensaje burbuja</h2>
-      <form method="POST" action="/mural">
-        <label for="mural-texto">Tu mensaje</label>
-        <textarea id="mural-texto" name="texto" maxlength="200" required></textarea>
-        <button type="submit">Enviar mensaje</button>
+    <input type="radio" name="pestana" id="tab-mural" class="tab-radio"{% if not en_foro %} checked{% endif %}>
+    <input type="radio" name="pestana" id="tab-foro" class="tab-radio"{% if en_foro %} checked{% endif %}>
+
+    <div class="pestanas">
+      <label for="tab-mural">Mensaje burbuja</label>
+      <label for="tab-foro">Reflexión</label>
+    </div>
+
+    <section id="panel-mural" class="panel" aria-labelledby="titulo-mural">
+      <form class="formulario" method="POST" action="{{ url_for('crear_mural') }}">
+        <h2 id="titulo-mural">Mensaje burbuja</h2>
+        <p class="desc">Un mensaje corto que aparecerá en el mural de la pantalla.</p>
+        <label class="campo" for="mural-texto">Tu mensaje</label>
+        <textarea id="mural-texto" name="texto" maxlength="200" required
+                  placeholder="Escribe aquí tu mensaje…" data-contador="cont-mural">{% if en_mural %}{{ request.form.get('texto', '') }}{% endif %}</textarea>
+        <div class="contador" id="cont-mural" aria-live="polite"></div>
+        <button class="boton" type="submit">Enviar mensaje</button>
       </form>
     </section>
 
-    <section>
-      <h2>Reflexión</h2>
-      <form method="POST" action="/foro">
-        <label for="foro-titulo">Título</label>
-        <input id="foro-titulo" name="titulo" maxlength="80" required>
-        <label for="foro-texto">Tu reflexión</label>
-        <textarea id="foro-texto" name="texto" maxlength="1000" required></textarea>
-        <p class="notice">Tu reflexión se mostrará tras ser revisada.</p>
-        <button type="submit">Enviar reflexión</button>
+    <section id="panel-foro" class="panel" aria-labelledby="titulo-foro">
+      <form class="formulario" method="POST" action="{{ url_for('crear_foro') }}">
+        <h2 id="titulo-foro">Reflexión</h2>
+        <p class="desc">Comparte una reflexión más larga para el foro.</p>
+        <label class="campo" for="foro-titulo">Título</label>
+        <input type="text" id="foro-titulo" name="titulo" maxlength="80" required
+               placeholder="Un título breve" data-contador="cont-titulo"
+               value="{% if en_foro %}{{ request.form.get('titulo', '') }}{% endif %}">
+        <div class="contador" id="cont-titulo" aria-live="polite"></div>
+        <label class="campo" for="foro-texto">Tu reflexión</label>
+        <textarea id="foro-texto" name="texto" maxlength="1000" required
+                  placeholder="Escribe aquí tu reflexión…" data-contador="cont-foro">{% if en_foro %}{{ request.form.get('texto', '') }}{% endif %}</textarea>
+        <div class="contador" id="cont-foro" aria-live="polite"></div>
+        <button class="boton" type="submit">Enviar reflexión</button>
+        <p class="nota">Tu reflexión se mostrará tras ser revisada.</p>
       </form>
     </section>
   </main>
+
+  <footer class="pie">#25N · Juntas contra la violencia de género</footer>
+
+  <script src="{{ url_for('static', filename='js/participa.js') }}"></script>
 </body>
 </html>
