@@ -1,0 +1,150 @@
+<!doctype html>
+<!-- T10 · Vista previa de estilos.css con datos falsos (no forma parte de la app).
+     Abrir con doble clic. Usa el estilos.css real del repositorio, así que al editarlo
+     basta con recargar. Pulsa F11 para verlo como en el proyector. -->
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Vista previa T10</title>
+  <link rel="stylesheet" href="../../static/css/estilos.css">
+  <style>
+    /* Solo para la vista previa */
+    #controles { position: fixed; top: 8px; left: 8px; z-index: 50; display: flex; gap: 6px; flex-wrap: wrap;
+                 font: 14px system-ui, sans-serif; background: rgba(0,0,0,.6); padding: 6px; border-radius: 8px; }
+    #controles button { font: inherit; padding: 4px 10px; cursor: pointer; }
+    #aviso-video { margin: auto; color: #e1bee7; font-size: 3vh; position: absolute; inset: 0;
+                   display: grid; place-items: center; pointer-events: none; }
+  </style>
+</head>
+<body>
+  <div id="controles">
+    <button data-vista="vista-mural">Mural</button>
+    <button data-vista="vista-video">Vídeo</button>
+    <button data-vista="vista-foro">Foro</button>
+    <span>| Burbujas:</span>
+    <button data-burbujas="5">5</button><button data-burbujas="30">30</button>
+    <span>| Reflexiones:</span>
+    <button data-foro="0">0</button><button data-foro="1">1</button><button data-foro="3">3</button>
+  </div>
+
+  <section id="vista-mural" class="vista"></section>
+
+  <section id="vista-video" class="vista" hidden>
+    <video id="video25n" muted playsinline></video>
+    <p id="aviso-video">(aquí irá static/video/video.mp4)</p>
+  </section>
+
+  <section id="vista-foro" class="vista" hidden></section>
+
+  <aside id="qr">
+    <img id="qr-img" src="../../static/img/qr.png" alt="Código QR para participar">
+    <p>Leave your message / Deja tu mensaje</p>
+  </aside>
+
+  <script>
+    const mensajes = [
+      "No estás sola 💜", "Ni una menos", "<b>hola</b> (debe verse como texto)",
+      "El silencio no protege, la palabra sí", "Te creemos", "Juntas somos más fuertes",
+      "El respeto se enseña en casa y en clase", "Si te controla, no te quiere",
+      "25N: memoria y compromiso", "Denunciar es valiente. Acompañar también.",
+      "Unapalabramuylargasinespaciosparaprobarquelaburbujanoserompe"
+    ];
+    const reflexiones = [
+      { titulo: "Lo que aprendí este año",
+        texto: "Que la violencia no siempre deja marcas visibles. A veces empieza con revisar el móvil, con decidir con quién hablas o qué ropa te pones. Reconocerlo a tiempo es el primer paso para salir." },
+      { titulo: "A mi amiga",
+        texto: "Gracias por contármelo. No tengo todas las respuestas, pero sí sé que no voy a dejarte sola en esto." },
+      { titulo: "Un título bastante largo para comprobar que se recorta correctamente con puntos suspensivos al final",
+        texto: "Texto largo. ".repeat(80) }
+    ];
+
+    function pintarMuralPrueba(n) {
+      const mural = document.getElementById("vista-mural");
+      mural.replaceChildren();
+      // Rejilla con desplazamiento aleatorio: evita solapes y deja libre la esquina del QR
+      const columnas = 5, filas = 5;
+      const huecos = [];
+      for (let f = 0; f < filas; f++)
+        for (let c = 0; c < columnas; c++)
+          if (!(c >= columnas - 2 && f >= filas - 2)) huecos.push([c, f]);
+      huecos.sort(() => Math.random() - 0.5);
+      for (let i = 0; i < Math.min(n, huecos.length); i++) {
+        const [c, f] = huecos[i];
+        const div = document.createElement("div");
+        div.className = "burbuja" + (i === 0 ? " burbuja--nueva" : "");
+        div.textContent = mensajes[i % mensajes.length];
+        div.style.left = (c / columnas * 100 + Math.random() * 3) + "%";
+        div.style.top = (f / filas * 100 + Math.random() * 4) + "%";
+        div.style.setProperty("--retraso", (-Math.random() * 7).toFixed(1) + "s");
+        mural.appendChild(div);
+        // Si se sale por la derecha o por abajo, la metemos dentro (consejo para T07)
+        const sobraX = div.offsetLeft + div.offsetWidth - mural.clientWidth;
+        const sobraY = div.offsetTop + div.offsetHeight - mural.clientHeight;
+        if (sobraX > 0) div.style.left = Math.max(0, div.offsetLeft - sobraX - 16) + "px";
+        if (sobraY > 0) div.style.top = Math.max(0, div.offsetTop - sobraY - 16) + "px";
+      }
+    }
+
+    function pintarForoPrueba(n) {
+      const foro = document.getElementById("vista-foro");
+      // Misma estructura que crea foro.js de la T09 (PR #2)
+      foro.replaceChildren();
+      const cabecera = document.createElement("h2");
+      cabecera.className = "foro-cabecera";
+      cabecera.textContent = "Reflexiones / Reflections";
+      const cont = document.createElement("div");
+      cont.className = "foro-tarjetas";
+      foro.append(cabecera, cont);
+      if (n === 0) {
+        cont.style.setProperty("--foro-columnas", 1);
+        const vacio = document.createElement("div");
+        vacio.className = "foro-vacio";
+        const es = document.createElement("p");
+        es.textContent = "Escanea el QR y comparte tu reflexión";
+        const en = document.createElement("p");
+        en.className = "foro-vacio-en";
+        en.textContent = "Scan the QR and share your reflection";
+        vacio.append(es, en);
+        cont.appendChild(vacio);
+        return;
+      }
+      cont.style.setProperty("--foro-columnas", Math.min(n, 3));
+      reflexiones.slice(0, n).forEach(r => {
+        const art = document.createElement("article");
+        art.className = "foro-tarjeta";
+        const h = document.createElement("h3");
+        h.className = "foro-titulo";
+        h.textContent = r.titulo;
+        const p = document.createElement("p");
+        p.className = "foro-texto";
+        p.textContent = r.texto;
+        art.append(h, p);
+        cont.appendChild(art);
+      });
+      foro.appendChild(cont);
+    }
+
+    function mostrar(id) {
+      document.querySelectorAll(".vista").forEach(v => v.hidden = v.id !== id);
+    }
+
+    document.getElementById("controles").addEventListener("click", e => {
+      const b = e.target.closest("button");
+      if (!b) return;
+      if (b.dataset.vista) mostrar(b.dataset.vista);
+      if (b.dataset.burbujas) { pintarMuralPrueba(+b.dataset.burbujas); mostrar("vista-mural"); }
+      if (b.dataset.foro) { pintarForoPrueba(+b.dataset.foro); mostrar("vista-foro"); }
+    });
+
+
+    pintarMuralPrueba(12);
+    pintarForoPrueba(3);
+    // #foro, #foro0, #video o #mural30 en la URL abre esa vista directamente
+    const h = location.hash.slice(1);
+    if (h.startsWith("foro")) { pintarForoPrueba(h === "foro" ? 3 : +h.slice(4)); mostrar("vista-foro"); }
+    if (h === "video") mostrar("vista-video");
+    if (h === "mural30") pintarMuralPrueba(30);
+  </script>
+</body>
+</html>

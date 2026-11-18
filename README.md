@@ -39,7 +39,10 @@ Cada archivo ya existe con un comentario que indica qué tarea lo rellena.
 ├── deploy/                 T05 · scripts y plantillas de despliegue
 ├── docs/
 │   ├── tareas/             Enunciado de cada tarea (T01–T10)
+│   ├── t10/                T10 · vista previa de estilos.css y lista de pruebas en móviles
 │   └── DESPLIEGUE.md       T05 · guía de despliegue y checklist de PRs
+├── herramientas/
+│   └── generar_qr.py       T10 · regenera static/img/qr.png (sin dependencias)
 ├── datos/                  Se crea solo: aquí vive 25n.db (no se sube a git)
 ├── requirements.txt
 └── .env.example            Variables de entorno (copiar a .env)
