@@ -26,6 +26,8 @@ Cada archivo ya existe con un comentario que indica qué tarea lo rellena.
 ├── static/
 │   ├── css/
 │   │   ├── estilos.css     T10 · estilos de la pantalla
+│   │   ├── mural.css       T07 · mural de burbujas (lo carga mural.js)
+│   │   ├── video.css       T08 · vista de vídeo (lo carga video.js)
 │   │   ├── participa.css   T06 · estilos del formulario
 │   │   └── admin.css       T03 · estilos del panel
 │   ├── js/
@@ -34,6 +36,7 @@ Cada archivo ya existe con un comentario que indica qué tarea lo rellena.
 │   │   ├── mural.js        T07 · pintarMural(mensajes)
 │   │   ├── video.js        T08 · iniciarVideo() / pararVideo()
 │   │   └── foro.js         T09 · pintarForo(reflexiones)
+│   ├── fonts/              T07 · fuentes del mural en local (woff2, OFL)
 │   ├── img/qr.png          T10 · QR de /participa
 │   └── video/video.mp4     T08 · vídeo de concienciación
 ├── deploy/                 T05 · scripts y plantillas de despliegue
