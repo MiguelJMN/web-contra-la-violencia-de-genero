@@ -1,4 +1,12 @@
-
+// T04 — Rotación de vistas y actualización cada 10 s (fetch a /api/mural y /api/foro).
+//
+// - Alterna mural → vídeo → foro. Solo una vista visible a la vez.
+// - La vista de vídeo avanza con el evento 'ended' del vídeo, no por tiempo.
+// - Cada 10 s pide la API (URLs en <body data-api-mural / data-api-foro>) y llama a pintarMural (T07) y pintarForo (T09).
+// - Si una petición falla, se queda lo último que se pintó: nunca pantalla en blanco.
+// - Crea un botón de pantalla completa (o se puede usar F11).
+//
+// Para pruebas: /pantalla?seg=20  → cada vista con tiempo dura 20 s en vez de 5 min.
 (() => {
   'use strict';
 
@@ -45,9 +53,7 @@
       const el = document.getElementById('vista-' + n);
       if (!el) continue;
       const visible = (n === nombre);
-      el.hidden = !visible;
-      // Por si estilos.css da display a .vista (eso anularía el atributo hidden)
-      el.style.display = visible ? '' : 'none';
+      el.hidden = !visible; // estilos.css ya tiene .vista[hidden] { display: none !important }
     }
     vistaActual = nombre;
 
@@ -108,6 +114,7 @@
 
   // ---------- Actualización de datos ----------
   async function actualizar(url, pintar) {
+    if (!url) { console.warn('Falta la URL de la API en <body data-api-…>'); return; }
     const ctrl = new AbortController();
     const t = setTimeout(() => ctrl.abort(), CONFIG.tiempoMaxPeticion);
     try {
@@ -126,8 +133,8 @@
 
   async function cicloDatos() {
     await Promise.all([
-      actualizar('/api/mural', d => { if (typeof pintarMural === 'function') pintarMural(d); }),
-      actualizar('/api/foro',  d => { if (typeof pintarForo  === 'function') pintarForo(d); }),
+      actualizar(document.body.dataset.apiMural, d => { if (typeof pintarMural === 'function') pintarMural(d); }),
+      actualizar(document.body.dataset.apiForo,  d => { if (typeof pintarForo  === 'function') pintarForo(d); }),
     ]);
     // Se programa al terminar: si la red va lenta, las peticiones no se acumulan
     setTimeout(cicloDatos, CONFIG.refresco);
@@ -139,11 +146,8 @@
     const boton = document.createElement('button');
     boton.type = 'button';
     boton.id = 'btn-pantalla-completa';
+    boton.className = 'boton-pantalla-completa'; // estilo y ocultación en pantalla completa: T10
     boton.textContent = 'Pantalla completa (o pulsa F11)';
-    Object.assign(boton.style, {
-      position: 'fixed', top: '1rem', left: '1rem', zIndex: '1000',
-      padding: '.6rem 1rem', fontSize: '1rem', cursor: 'pointer',
-    });
 
     boton.addEventListener('click', () => {
       const el = document.documentElement;
@@ -154,11 +158,6 @@
       }
       // Si el navegador había bloqueado el vídeo, el clic permite reintentarlo
       if (vistaActual === 'video' && video && video.paused) video.play().catch(() => {});
-    });
-
-    // En pantalla completa el botón desaparece; al salir, vuelve
-    document.addEventListener('fullscreenchange', () => {
-      boton.hidden = Boolean(document.fullscreenElement);
     });
 
     document.body.append(boton);
