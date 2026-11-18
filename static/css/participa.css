@@ -1,1 +1,15 @@
 /* T06 — Estilos del formulario público /participa y /gracias (mobile first, 360 px). */
+
+/* Estilos provisionales (antes en línea en participa.html): la T06 los sustituirá. */
+:root { color-scheme: light; font-family: system-ui, sans-serif; }
+body { margin: 0; background: #f7f3f5; color: #242126; }
+main { width: min(100% - 2rem, 42rem); margin: 0 auto; padding: 2rem 0; }
+h1 { font-size: 2rem; margin: 0 0 1rem; }
+section { background: white; border-radius: 1rem; margin: 1rem 0; padding: 1.25rem; }
+label { display: block; font-weight: 650; margin: 1rem 0 .4rem; }
+textarea, input { box-sizing: border-box; width: 100%; padding: .8rem; border: 1px solid #777; border-radius: .5rem; font: inherit; }
+textarea { min-height: 8rem; resize: vertical; }
+button { min-height: 2.9rem; margin-top: 1rem; padding: .65rem 1rem; border: 0; border-radius: .5rem; background: #6a2854; color: white; font: inherit; font-weight: 700; cursor: pointer; }
+.notice { color: #514750; }
+.error { padding: .8rem; border-left: .25rem solid #a11; background: #fff0f0; }
+@media (min-width: 40rem) { main { padding: 3rem 0; } section { padding: 1.5rem; } }
