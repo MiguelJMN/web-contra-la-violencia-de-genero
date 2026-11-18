@@ -1,1 +1,15 @@
-{# T06 — Página de agradecimiento con enlace para enviar otro mensaje. #}
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Gracias por participar</title>
+</head>
+<body>
+  <main>
+    <h1>¡Gracias por participar!</h1>
+    <p>Tu aportación se ha recibido correctamente.</p>
+    <a href="{{ url_for('participa') }}">Enviar otra aportación</a>
+  </main>
+</body>
+</html>
