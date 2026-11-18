@@ -7,16 +7,21 @@
 // Cada mensaje puede traer, si se quiere, su propia personalización:
 //   color   cualquier color CSS ("#ff4d9d", "teal", "rgb(0 128 255)"). Por defecto, morado 25N.
 //   fuente  una de las claves de FUENTES ("moderna", "manuscrita", "elegante"...).
+//   forma   una de las claves de FORMAS ("circulo", "corazon", "estrella"...).
 //   emoji   uno o varios emojis que se muestran grandes encima del texto.
 // Los valores que no son válidos se ignoran y se usa el predeterminado.
 //
-// Opcional: configurarMural({color, fuente, maxBurbujas, velocidad}) cambia los
-// valores por defecto de todo el mural.
+// Opcional: configurarMural({color, fuente, forma, maxBurbujas, velocidad}) cambia
+// los valores por defecto de todo el mural.
 //
 // Datos de prueba: abre la pantalla con ?demo=mural para verlo sin la API.
 //
 // Los estilos del mural viven aquí (se inyectan una vez) para no tocar
 // estilos.css, que es de la T10. Todos van bajo #vista-mural.
+//
+// Rendimiento: en cada fotograma solo cambia `transform` (lo mueve la tarjeta
+// gráfica, sin recalcular la página). El tamaño real de cada burbuja solo se
+// toca cuando cambia el número de burbujas.
 
 (function () {
   'use strict';
@@ -38,23 +43,42 @@
     '&family=Pacifico&family=Playfair+Display:wght@600&family=Poppins:wght@600' +
     '&family=Space+Mono:wght@700&display=swap';
 
+  // Formas en coordenadas de 0 a 1 (se estiran a la caja de la burbuja).
+  // El círculo no necesita trazado: es la burbuja clásica con border-radius.
+  const FORMAS = {
+    circulo: null,
+    corazon: 'M0.5,0.95 C0.38,0.86 0.03,0.64 0.03,0.34 C0.03,0.16 0.16,0.04 0.31,0.04 ' +
+      'C0.41,0.04 0.47,0.1 0.5,0.18 C0.53,0.1 0.59,0.04 0.69,0.04 C0.84,0.04 0.97,0.16 ' +
+      '0.97,0.34 C0.97,0.64 0.62,0.86 0.5,0.95 Z',
+    estrella: poligonoRedondeado(puntosEstrella(5, 0.5, 0.53, 0.49, 0.6), 0.32),
+    // Cinco pétalos redondos (|cos| deja una muesca entre pétalo y pétalo).
+    flor: trazadoPolar(function (a) { return 0.5 * (0.8 + 0.2 * Math.abs(Math.cos(2.5 * (a + Math.PI / 2)))); }),
+    hexagono: poligonoRedondeado(puntosEstrella(3, 0.5, 0.5, 0.5, 1), 0.2),
+    cuadrada: trazadoPolar(function (a) {
+      // "Squircle": cuadrado de esquinas suaves, como los iconos de Apple.
+      const c = Math.abs(Math.cos(a));
+      const s = Math.abs(Math.sin(a));
+      return 0.5 / Math.pow(Math.pow(c, 5) + Math.pow(s, 5), 1 / 5);
+    }),
+  };
+
   const CONFIG = {
     maxBurbujas: 30,
     color: '#8e3ff0',     // morado 25N
     fuente: 'moderna',
-    velocidad: 55,        // px por segundo
-    ocupacion: 0.42,      // parte de la pantalla que cubren las burbujas
+    forma: 'circulo',
+    velocidad: 60,        // px por segundo
+    ocupacion: 0.38,      // parte de la pantalla que cubren las burbujas
   };
 
   const MAX_TEXTO = 200;
-  const ESCALA_ENCIMA = 1.14;
+  const SUBPASOS = 3;     // la física se calcula varias veces por fotograma: choques más suaves
   const reducirMovimiento = window.matchMedia &&
     window.matchMedia('(prefers-reduced-motion: reduce)').matches;
 
   // --- Estado ----------------------------------------------------------------
 
   const burbujas = new Map();   // id -> burbuja activa
-  const salientes = new Set();  // burbujas que se están yendo
   let contenedor = null;
   let capa = null;
   let ancho = 0;
@@ -94,26 +118,23 @@
     }
 
     recalcularTamanos();
-    for (const b of burbujas.values()) {
-      if (b.porAjustar) ajustarTexto(b);
-    }
   }
 
   function configurarMural(opciones) {
     if (!opciones || typeof opciones !== 'object') return;
     if (colorARgb(opciones.color)) CONFIG.color = opciones.color;
     if (FUENTES[opciones.fuente]) CONFIG.fuente = opciones.fuente;
+    if (Object.prototype.hasOwnProperty.call(FORMAS, opciones.forma)) CONFIG.forma = opciones.forma;
     if (opciones.maxBurbujas > 0) CONFIG.maxBurbujas = Math.min(60, Math.floor(opciones.maxBurbujas));
     if (opciones.velocidad >= 0) CONFIG.velocidad = Math.min(400, Number(opciones.velocidad));
-    for (const b of burbujas.values()) {
-      rellenar(b, b.mensaje);
-      ajustarTexto(b);
-    }
+    for (const b of burbujas.values()) rellenar(b, b.mensaje);
+    recalcularTamanos();
   }
 
   window.pintarMural = pintarMural;
   window.configurarMural = configurarMural;
   window.MURAL_FUENTES = Object.keys(FUENTES);
+  window.MURAL_FORMAS = Object.keys(FORMAS);
 
   // --- Arranque --------------------------------------------------------------
 
@@ -125,15 +146,14 @@
 
     inyectarEstilos();
     cargarFuentes();
-
     contenedor.classList.add('mural');
+
     const fondo = document.createElement('div');
     fondo.className = 'mural-fondo';
     fondo.setAttribute('aria-hidden', 'true');
-    for (let i = 0; i < 5; i++) fondo.appendChild(document.createElement('span'));
     capa = document.createElement('div');
     capa.className = 'mural-capa';
-    contenedor.append(fondo, capa);
+    contenedor.append(fondo, crearDefinicionesSvg(), capa);
 
     medir();
     if ('ResizeObserver' in window) {
@@ -159,7 +179,6 @@
     if (!ancho || !alto) return;   // vista oculta: se espera a que se muestre
     if (cambio) recalcularTamanos();
     for (const b of burbujas.values()) {
-      if (!b.colocada) colocar(b);
       if (b.porAjustar) ajustarTexto(b);
       b.x = limitar(b.x, b.r, ancho - b.r);
       b.y = limitar(b.y, b.r, alto - b.r);
@@ -179,6 +198,7 @@
       texto: texto,
       color: colorARgb(m.color) ? m.color.trim() : null,
       fuente: FUENTES[m.fuente] ? m.fuente : null,
+      forma: Object.prototype.hasOwnProperty.call(FORMAS, m.forma) ? m.forma : null,
       emoji: limpiarEmoji(m.emoji),
     };
   }
@@ -199,7 +219,7 @@
   }
 
   function firmaDe(m) {
-    return [m.texto, m.color, m.fuente, m.emoji].join('\u0000');
+    return [m.texto, m.color, m.fuente, m.forma, m.emoji].join('\u0000');
   }
 
   const lienzo = document.createElement('canvas').getContext('2d');
@@ -228,6 +248,92 @@
     return 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2];
   }
 
+  // --- Formas ----------------------------------------------------------------
+
+  function puntosEstrella(puntas, cx, cy, radio, proporcionInterior) {
+    const pts = [];
+    const n = puntas * 2;
+    for (let i = 0; i < n; i++) {
+      const a = -Math.PI / 2 + i * Math.PI / puntas;
+      const r = i % 2 ? radio * proporcionInterior : radio;
+      pts.push([cx + r * Math.cos(a), cy + r * Math.sin(a)]);
+    }
+    return pts;
+  }
+
+  // Polígono con las esquinas redondeadas con curvas (t = cuánto se redondea).
+  function poligonoRedondeado(pts, t) {
+    const n = pts.length;
+    const p = function (v) { return v[0].toFixed(4) + ',' + v[1].toFixed(4); };
+    const hacia = function (a, b, k) { return [a[0] + (b[0] - a[0]) * k, a[1] + (b[1] - a[1]) * k]; };
+    let d = '';
+    for (let i = 0; i < n; i++) {
+      const ant = pts[(i - 1 + n) % n];
+      const act = pts[i];
+      const sig = pts[(i + 1) % n];
+      const entrada = hacia(act, ant, t);
+      const salida = hacia(act, sig, t);
+      d += (i ? ' L' : 'M') + p(entrada) + ' Q' + p(act) + ' ' + p(salida);
+    }
+    return d + ' Z';
+  }
+
+  function trazadoPolar(radio) {
+    let d = '';
+    for (let i = 0; i < 144; i++) {
+      const a = i / 144 * Math.PI * 2;
+      const r = radio(a);
+      d += (i ? ' L' : 'M') + (0.5 + r * Math.cos(a)).toFixed(4) + ',' + (0.5 + r * Math.sin(a)).toFixed(4);
+    }
+    return d + ' Z';
+  }
+
+  const SVG = 'http://www.w3.org/2000/svg';
+
+  function nodoSvg(nombre, atributos, hijos) {
+    const n = document.createElementNS(SVG, nombre);
+    for (const k in atributos) n.setAttribute(k, atributos[k]);
+    (hijos || []).forEach(function (h) { n.appendChild(h); });
+    return n;
+  }
+
+  // Recortes de cada forma y degradados del cristal, compartidos por todas las burbujas.
+  function crearDefinicionesSvg() {
+    const defs = nodoSvg('defs', {});
+    for (const nombre in FORMAS) {
+      if (!FORMAS[nombre]) continue;
+      defs.appendChild(nodoSvg('clipPath', { id: 'mural-clip-' + nombre, clipPathUnits: 'objectBoundingBox' },
+        [nodoSvg('path', { d: FORMAS[nombre] })]));
+    }
+    const parada = function (o, c, a) { return nodoSvg('stop', { offset: o, 'stop-color': c, 'stop-opacity': a }); };
+    defs.appendChild(nodoSvg('radialGradient', { id: 'mural-brillo', cx: '0.32', cy: '0.2', r: '0.55' }, [
+      parada('0', '#fff', '.42'), parada('.55', '#fff', '.06'), parada('1', '#fff', '0'),
+    ]));
+    defs.appendChild(nodoSvg('linearGradient', { id: 'mural-volumen', x1: '0', y1: '0', x2: '1', y2: '1' }, [
+      parada('0', '#fff', '.85'), parada('.4', '#fff', '0'), parada('.6', '#000', '0'), parada('1', '#000', '.5'),
+    ]));
+    defs.appendChild(nodoSvg('linearGradient', { id: 'mural-iris', x1: '0', y1: '0', x2: '1', y2: '1' }, [
+      parada('0', '#fff', '.95'), parada('.3', '#ffa0e6', '.7'), parada('.55', '#fff', '.15'),
+      parada('.8', '#a0dcff', '.75'), parada('1', '#fff', '.9'),
+    ]));
+    defs.appendChild(nodoSvg('filter', { id: 'mural-difuminar', x: '-20%', y: '-20%', width: '140%', height: '140%' }, [
+      nodoSvg('feGaussianBlur', { stdDeviation: '0.03' }),
+    ]));
+    const svg = nodoSvg('svg', { class: 'mural-defs', width: '0', height: '0', 'aria-hidden': 'true' }, [defs]);
+    return svg;
+  }
+
+  // Capas de cristal dibujadas con el contorno de la forma (para las que no son círculo).
+  function crearCristalSvg(d) {
+    const comun = { d: d, fill: 'none', 'vector-effect': 'non-scaling-stroke' };
+    return nodoSvg('svg', { class: 'burbuja-svg', viewBox: '0 0 1 1', preserveAspectRatio: 'none', 'aria-hidden': 'true' }, [
+      nodoSvg('path', { d: d, fill: 'url(#mural-brillo)' }),
+      nodoSvg('path', Object.assign({ class: 'burbuja-volumen', stroke: 'url(#mural-volumen)', filter: 'url(#mural-difuminar)' }, comun)),
+      nodoSvg('path', Object.assign({ stroke: 'url(#mural-iris)', 'stroke-width': '4', opacity: '.7' }, comun)),
+      nodoSvg('path', Object.assign({ stroke: 'rgba(255,255,255,.6)', 'stroke-width': '1.5' }, comun)),
+    ]);
+  }
+
   // --- Burbujas --------------------------------------------------------------
 
   function crearBurbuja(m, orden) {
@@ -235,6 +341,9 @@
     el.className = 'burbuja';
     const escala = document.createElement('div');
     escala.className = 'burbuja-escala';
+    const sombra = document.createElement('div');
+    sombra.className = 'burbuja-sombra';
+    sombra.setAttribute('aria-hidden', 'true');
     const cuerpo = document.createElement('div');
     cuerpo.className = 'burbuja-cuerpo';
     const contenido = document.createElement('div');
@@ -247,27 +356,24 @@
 
     contenido.append(emoji, texto);
     cuerpo.appendChild(contenido);
-    escala.appendChild(cuerpo);
+    escala.append(sombra, cuerpo);
     el.appendChild(escala);
 
     const angulo = Math.random() * Math.PI * 2;
     const b = {
-      id: m.id, mensaje: m, el: el, escala: escala, cuerpo: cuerpo,
+      id: m.id, mensaje: m, el: el, escala: escala, cuerpo: cuerpo, svg: null,
       contenido: contenido, emojiEl: emoji, textoEl: texto,
-      x: 0, y: 0, r: 0, rObjetivo: 0, peso: 1,
-      factorVel: 0.7 + Math.random() * 0.6,
+      x: 0, y: 0, r: 0, rObjetivo: 0, rDom: 0, peso: 1, forma: null,
+      factorVel: 0.75 + Math.random() * 0.5,
+      giro: (Math.random() - 0.5) * 0.4,
       vx: Math.cos(angulo), vy: Math.sin(angulo),
-      fsRel: 0.2, encima: false, saliendo: false, colocada: false,
-      porAjustar: true, nacida: performance.now(), ultimoChoque: 0, firma: '',
+      saliendo: false, colocada: false, porAjustar: true,
+      nacida: performance.now(), ultimoChoque: 0, firma: '',
     };
 
-    cuerpo.style.setProperty('--dur', (6 + Math.random() * 4).toFixed(2) + 's');
-    cuerpo.style.setProperty('--retraso', (-Math.random() * 8).toFixed(2) + 's');
-    escala.style.animationDelay = Math.min(orden * 70, 1400) + 'ms';
-
-    el.addEventListener('pointerenter', function () { ponerEncima(b, true); });
-    el.addEventListener('pointerleave', function () { ponerEncima(b, false); });
-    el.addEventListener('pointermove', function (ev) { seguirPuntero(b, ev); });
+    escala.style.setProperty('--dur', (5 + Math.random() * 4).toFixed(2) + 's');
+    escala.style.setProperty('--retraso-flotar', (-Math.random() * 9).toFixed(2) + 's');
+    escala.style.setProperty('--retraso', Math.min(orden * 70, 1400) + 'ms');
 
     rellenar(b, m);
     burbujas.set(m.id, b);
@@ -290,27 +396,33 @@
     s.setProperty('--rgb', rgb.join(' '));
     s.setProperty('--rgb-osc', oscuro.join(' '));
     s.setProperty('--rgb-claro', claro.join(' '));
-    s.setProperty('--alfa', clara ? '0.62' : '0.3');
+    s.setProperty('--alfa', clara ? '0.62' : '0.32');
     s.setProperty('--fuente', FUENTES[m.fuente || CONFIG.fuente] || FUENTES.moderna);
     b.el.classList.toggle('burbuja-clara', clara);
 
-    // Los mensajes largos y con emoji necesitan algo más de sitio.
+    const forma = m.forma || CONFIG.forma;
+    if (forma !== b.forma) {
+      b.forma = forma;
+      b.el.dataset.forma = forma;
+      if (b.svg) { b.svg.remove(); b.svg = null; }
+      if (FORMAS[forma]) {
+        b.svg = crearCristalSvg(FORMAS[forma]);
+        b.cuerpo.insertBefore(b.svg, b.contenido);
+      }
+    }
+
+    // Los mensajes largos y con emoji necesitan algo más de sitio; la estrella también.
     const largo = Math.min(m.texto.length, MAX_TEXTO) / MAX_TEXTO;
-    b.peso = 0.8 + 0.6 * Math.sqrt(largo) + (m.emoji ? 0.08 : 0);
+    b.peso = (0.8 + 0.6 * Math.sqrt(largo) + (m.emoji ? 0.08 : 0)) * (forma === 'estrella' ? 1.12 : 1);
     b.porAjustar = true;
   }
 
   function quitarBurbuja(b) {
     if (b.saliendo) return;
     b.saliendo = true;
-    b.encima = false;
     burbujas.delete(b.id);
-    salientes.add(b);
     b.el.classList.add('saliendo');
-    setTimeout(function () {
-      b.el.remove();
-      salientes.delete(b);
-    }, 700);
+    setTimeout(function () { b.el.remove(); }, 700);
   }
 
   // Radio base para que entre todo sin amontonarse, según cuántas burbujas hay.
@@ -321,10 +433,13 @@
     if (!suma) return;
     const menor = Math.min(ancho, alto);
     const base = limitar(Math.sqrt(CONFIG.ocupacion * ancho * alto / (Math.PI * suma)),
-      menor * 0.06, menor * 0.22);
+      menor * 0.06, menor * 0.21);
     for (const b of burbujas.values()) {
-      b.rObjetivo = Math.min(base * b.peso, menor * 0.3);
+      b.rObjetivo = Math.min(base * b.peso, menor * 0.28);
       if (!b.colocada) colocar(b);
+      // El tamaño real del elemento solo cambia aquí; la transición la hace `scale`.
+      if (Math.abs(b.rDom - b.rObjetivo) > 0.5) fijarTamano(b, b.rObjetivo);
+      if (b.porAjustar) ajustarTexto(b);
     }
   }
 
@@ -351,23 +466,24 @@
     b.x = mejor[0];
     b.y = mejor[1];
     b.colocada = true;
-    aplicarTamano(b);
-    ajustarTexto(b);
     dibujar(b);
   }
 
-  function aplicarTamano(b) {
-    const d = (b.r * 2).toFixed(1) + 'px';
+  function fijarTamano(b, r) {
+    b.rDom = r;
+    const d = (r * 2).toFixed(1) + 'px';
     b.el.style.width = d;
     b.el.style.height = d;
-    b.el.style.setProperty('--fs', (b.fsRel * b.r).toFixed(2) + 'px');
+    if (b.svg) b.svg.querySelector('.burbuja-volumen').setAttribute('stroke-width', (r * 0.32).toFixed(1));
+    b.porAjustar = true;
   }
 
   // Elige el tamaño de letra más grande con el que el texto cabe en la burbuja.
   function ajustarTexto(b) {
-    if (!ancho || !b.r) { b.porAjustar = true; return; }
+    if (!ancho || !b.rDom) { b.porAjustar = true; return; }
+    const r = b.rDom;
     const largo = b.mensaje.texto.length + (b.mensaje.emoji ? 6 : 0);
-    let fs = Math.max(10, Math.min(b.r * 0.32, 1.55 * b.r / Math.sqrt(largo + 2)));
+    let fs = Math.max(10, Math.min(r * 0.32, 1.55 * r / Math.sqrt(largo + 2)));
     const c = b.contenido;
     const poner = function () { b.el.style.setProperty('--fs', fs.toFixed(2) + 'px'); };
     // Al centrar con flex, lo que desborda por arriba no cuenta en scrollHeight:
@@ -382,7 +498,6 @@
       fs *= 0.93;
       poner();
     }
-    b.fsRel = fs / b.r;
     b.porAjustar = false;
   }
 
@@ -390,82 +505,69 @@
     for (const b of burbujas.values()) ajustarTexto(b);
   }
 
-  // --- Ratón -----------------------------------------------------------------
-
-  function ponerEncima(b, valor) {
-    if (b.saliendo) return;
-    b.encima = valor;
-    b.el.classList.toggle('encima', valor);
-    if (!valor) {
-      b.cuerpo.style.removeProperty('--mx');
-      b.cuerpo.style.removeProperty('--my');
-      b.escala.style.removeProperty('--inclinar-x');
-      b.escala.style.removeProperty('--inclinar-y');
-    }
-  }
-
-  // El brillo sigue al puntero y la burbuja se inclina un poco hacia él.
-  function seguirPuntero(b, ev) {
-    if (!b.encima) return;
-    const caja = b.el.getBoundingClientRect();
-    const px = (ev.clientX - caja.left) / caja.width;
-    const py = (ev.clientY - caja.top) / caja.height;
-    b.cuerpo.style.setProperty('--mx', (px * 100).toFixed(1) + '%');
-    b.cuerpo.style.setProperty('--my', (py * 100).toFixed(1) + '%');
-    b.escala.style.setProperty('--inclinar-x', ((0.5 - py) * 16).toFixed(2) + 'deg');
-    b.escala.style.setProperty('--inclinar-y', ((px - 0.5) * 16).toFixed(2) + 'deg');
-  }
-
   // --- Física: movimiento, rebotes con los bordes y entre burbujas -------------
 
   function paso(t) {
     requestAnimationFrame(paso);
-    const dt = Math.min(0.05, Math.max(0, (t - ultimoTiempo) / 1000));
+    const dt = Math.min(0.04, Math.max(0, (t - ultimoTiempo) / 1000));
     ultimoTiempo = t;
-    if (document.hidden || !ancho || !alto || !burbujas.size) return;
+    if (document.hidden || !ancho || !alto || !burbujas.size || !dt) return;
 
     const lista = [];
     for (const b of burbujas.values()) if (b.colocada) lista.push(b);
     const velocidad = CONFIG.velocidad * (reducirMovimiento ? 0.25 : 1);
+    const h = dt / SUBPASOS;
 
     for (const b of lista) {
-      // El radio se acerca poco a poco al objetivo (cuando entran o salen otras).
-      if (Math.abs(b.rObjetivo - b.r) > 0.3) {
-        b.r += (b.rObjetivo - b.r) * Math.min(1, dt * 3);
-        aplicarTamano(b);
-      }
-      if (b.encima) continue;   // la que tiene el ratón encima se queda quieta
+      // El radio se acerca suavemente al objetivo (cuando entran o salen otras).
+      b.r += (b.rObjetivo - b.r) * Math.min(1, dt * 2.5);
 
-      // Mantiene una velocidad de crucero suave (ni se paran ni se disparan).
+      // Deriva: la dirección gira despacio para que la trayectoria sea curva y orgánica.
+      b.giro += (Math.random() - 0.5) * dt * 0.6;
+      b.giro = limitar(b.giro, -0.35, 0.35);
+      const g = b.giro * dt;
+      const cos = Math.cos(g);
+      const sin = Math.sin(g);
+      const vx = b.vx * cos - b.vy * sin;
+      b.vy = b.vx * sin + b.vy * cos;
+      b.vx = vx;
+
+      // Velocidad de crucero: tras un choque vuelve poco a poco a su ritmo.
       const v = Math.hypot(b.vx, b.vy) || 1;
-      const ajuste = (velocidad * b.factorVel - v) * Math.min(1, dt * 0.9);
+      const ajuste = (velocidad * b.factorVel - v) * Math.min(1, dt * 0.7);
       b.vx += (b.vx / v) * ajuste;
       b.vy += (b.vy / v) * ajuste;
-
-      b.x += b.vx * dt;
-      b.y += b.vy * dt;
-
-      if (b.x < b.r) { b.x = b.r; b.vx = Math.abs(b.vx); choque(b, t); }
-      else if (b.x > ancho - b.r) { b.x = ancho - b.r; b.vx = -Math.abs(b.vx); choque(b, t); }
-      if (b.y < b.r) { b.y = b.r; b.vy = Math.abs(b.vy); choque(b, t); }
-      else if (b.y > alto - b.r) { b.y = alto - b.r; b.vy = -Math.abs(b.vy); choque(b, t); }
     }
 
-    // Choques elásticos entre burbujas (la masa crece con el área).
+    for (let s = 0; s < SUBPASOS; s++) {
+      for (const b of lista) {
+        b.x += b.vx * h;
+        b.y += b.vy * h;
+        if (b.x < b.r) { b.x = b.r; b.vx = Math.abs(b.vx); choque(b, t, 1, 0); }
+        else if (b.x > ancho - b.r) { b.x = ancho - b.r; b.vx = -Math.abs(b.vx); choque(b, t, 1, 0); }
+        if (b.y < b.r) { b.y = b.r; b.vy = Math.abs(b.vy); choque(b, t, 0, 1); }
+        else if (b.y > alto - b.r) { b.y = alto - b.r; b.vy = -Math.abs(b.vy); choque(b, t, 0, 1); }
+      }
+      chocarEntreSi(lista, t);
+    }
+
+    for (const b of lista) dibujar(b);
+  }
+
+  // Choques elásticos entre burbujas (la masa crece con el área).
+  function chocarEntreSi(lista, t) {
     for (let i = 0; i < lista.length; i++) {
       const a = lista[i];
-      const ra = a.r * (a.encima ? ESCALA_ENCIMA : 1);
-      const ia = a.encima ? 0 : 1 / (a.r * a.r);
+      const ia = 1 / (a.r * a.r);
       for (let j = i + 1; j < lista.length; j++) {
         const c = lista[j];
-        const rc = c.r * (c.encima ? ESCALA_ENCIMA : 1);
         let dx = c.x - a.x;
         let dy = c.y - a.y;
+        const minimo = a.r + c.r;
+        if (Math.abs(dx) >= minimo || Math.abs(dy) >= minimo) continue;
         let dist = Math.hypot(dx, dy);
-        const minimo = ra + rc;
         if (dist >= minimo) continue;
-        const ic = c.encima ? 0 : 1 / (c.r * c.r);
-        if (ia + ic === 0) continue;
+        const ic = 1 / (c.r * c.r);
         if (dist < 0.001) {
           dx = Math.random() - 0.5;
           dy = Math.random() - 0.5;
@@ -474,8 +576,8 @@
         const nx = dx / dist;
         const ny = dy / dist;
 
-        // Se separan para que no se monten.
-        const solape = minimo - dist;
+        // Se separan con suavidad (solo una parte del solape por subpaso: sin tirones).
+        const solape = (minimo - dist) * 0.5;
         const pa = solape * ia / (ia + ic);
         const pc = solape * ic / (ia + ic);
         a.x -= nx * pa; a.y -= ny * pa;
@@ -487,32 +589,30 @@
           const imp = -2 * vrel / (ia + ic);
           a.vx -= imp * ia * nx; a.vy -= imp * ia * ny;
           c.vx += imp * ic * nx; c.vy += imp * ic * ny;
-          if (-vrel > 12) { choque(a, t); choque(c, t); }
+          if (-vrel > 15) { choque(a, t, nx, ny); choque(c, t, nx, ny); }
         }
       }
     }
-
-    for (const b of lista) {
-      if (!b.encima) {
-        b.x = limitar(b.x, b.r, ancho - b.r);
-        b.y = limitar(b.y, b.r, alto - b.r);
-      }
-      dibujar(b);
-    }
   }
 
-  // Pequeño efecto gelatina al chocar.
-  function choque(b, t) {
-    if (b.encima || reducirMovimiento || t - b.ultimoChoque < 450 || t - b.nacida < 1600) return;
+  // Efecto gelatina al chocar: se aplasta en la dirección del golpe.
+  // Se hace con la Web Animations API, que no obliga a recalcular la página.
+  function choque(b, t, nx, ny) {
+    if (b.saliendo || reducirMovimiento || t - b.ultimoChoque < 500 || t - b.nacida < 1800) return;
+    if (!b.escala.animate) return;
     b.ultimoChoque = t;
-    b.escala.classList.remove('choque');
-    void b.escala.offsetWidth;   // reinicia la animación
-    b.escala.classList.add('choque');
+    const horizontal = Math.abs(nx) > Math.abs(ny);
+    const aplastar = horizontal ? '0.92 1.07' : '1.07 0.92';
+    const rebotar = horizontal ? '1.04 0.97' : '0.97 1.04';
+    b.escala.animate([
+      { scale: '1 1' }, { scale: aplastar, offset: 0.28 }, { scale: rebotar, offset: 0.6 }, { scale: '1 1' },
+    ], { duration: 650, easing: 'cubic-bezier(.25,.8,.35,1)' });
   }
 
   function dibujar(b) {
-    b.el.style.transform = 'translate3d(' + (b.x - b.r).toFixed(2) + 'px,' +
-      (b.y - b.r).toFixed(2) + 'px,0)';
+    const k = b.rDom ? b.r / b.rDom : 1;
+    b.el.style.transform = 'translate3d(' + (b.x - b.rDom).toFixed(2) + 'px,' +
+      (b.y - b.rDom).toFixed(2) + 'px,0) scale(' + k.toFixed(4) + ')';
   }
 
   function limitar(v, min, max) {
@@ -546,80 +646,70 @@
   height: 100dvh;
   overflow: hidden;
   isolation: isolate;
-  background:
-    radial-gradient(120% 90% at 50% 110%, #3a0d63 0%, transparent 60%),
-    radial-gradient(90% 70% at 0% 0%, #2a0848 0%, transparent 70%),
-    #13041f;
+  background: #13041f;
 }
 
-/* Fondo: manchas de color que se mueven despacio y dan algo que refractar al cristal. */
-#vista-mural .mural-fondo { position: absolute; inset: 0; z-index: 0; pointer-events: none; }
-#vista-mural .mural-fondo span {
+/* Fondo: manchas de color con degradados (sin filtros: no cuesta nada moverlas). */
+#vista-mural .mural-fondo {
   position: absolute;
-  width: 46vmax; height: 46vmax;
-  border-radius: 50%;
-  filter: blur(70px);
-  opacity: .55;
-  animation: mural-orbe 34s ease-in-out infinite alternate;
+  inset: -20%;
+  z-index: 0;
+  pointer-events: none;
+  background:
+    radial-gradient(32% 38% at 18% 20%, rgb(123 44 191 / .85), transparent 70%),
+    radial-gradient(30% 36% at 84% 30%, rgb(193 53 132 / .6), transparent 70%),
+    radial-gradient(38% 34% at 45% 92%, rgb(90 24 154 / .85), transparent 70%),
+    radial-gradient(18% 22% at 68% 62%, rgb(224 170 255 / .28), transparent 70%),
+    radial-gradient(26% 30% at 12% 70%, rgb(60 9 108 / .9), transparent 70%);
+  will-change: transform;
+  animation: mural-fondo 60s ease-in-out infinite alternate;
 }
-#vista-mural .mural-fondo span:nth-child(1) { background: #7b2cbf; left: -10%; top: -15%; }
-#vista-mural .mural-fondo span:nth-child(2) { background: #c13584; right: -12%; top: 10%; animation-duration: 41s; animation-delay: -12s; }
-#vista-mural .mural-fondo span:nth-child(3) { background: #5a189a; left: 25%; bottom: -30%; animation-duration: 47s; animation-delay: -20s; }
-#vista-mural .mural-fondo span:nth-child(4) { background: #e0aaff; width: 26vmax; height: 26vmax; left: 55%; top: 40%; opacity: .28; animation-duration: 38s; animation-delay: -5s; }
-#vista-mural .mural-fondo span:nth-child(5) { background: #3c096c; width: 34vmax; height: 34vmax; left: 5%; top: 45%; animation-duration: 52s; animation-delay: -30s; }
-
-@keyframes mural-orbe {
-  0%   { transform: translate(0, 0) scale(1); }
-  50%  { transform: translate(8vw, 6vh) scale(1.15); }
-  100% { transform: translate(-6vw, -4vh) scale(.92); }
+@keyframes mural-fondo {
+  0%   { transform: translate3d(0, 0, 0) rotate(0deg) scale(1); }
+  50%  { transform: translate3d(4%, 3%, 0) rotate(8deg) scale(1.06); }
+  100% { transform: translate3d(-3%, -2%, 0) rotate(-6deg) scale(.97); }
 }
 
-#vista-mural .mural-capa { position: absolute; inset: 0; z-index: 1; }
+#vista-mural .mural-defs { position: absolute; width: 0; height: 0; overflow: hidden; }
+#vista-mural .mural-capa { position: absolute; inset: 0; z-index: 1; pointer-events: none; }
 
-/* Capa 1: posición (la mueve el JS). */
+/* Capa 1: posición y tamaño (los mueve el JS solo con transform). */
 #vista-mural .burbuja {
   position: absolute;
   left: 0; top: 0;
   will-change: transform;
-  z-index: 1;
-  -webkit-tap-highlight-color: transparent;
+  transform-origin: 50% 50%;
 }
-#vista-mural .burbuja.encima { z-index: 10; }
 
-/* Capa 2: entrada, salida, rebote y efecto al pasar el ratón. */
+/* Capa 2: entrada, salida, flotación suave y efecto gelatina. */
 #vista-mural .burbuja-escala {
+  position: relative;
   width: 100%; height: 100%;
-  transform: perspective(700px) rotateX(var(--inclinar-x, 0deg)) rotateY(var(--inclinar-y, 0deg)) scale(1);
-  transition: transform .7s cubic-bezier(.17, 1.45, .35, 1);
-  animation: burbuja-entrar 1.1s cubic-bezier(.2, 1.5, .4, 1) backwards;
+  animation:
+    burbuja-entrar 1.1s cubic-bezier(.2, 1.5, .4, 1) var(--retraso, 0s) backwards,
+    burbuja-flotar var(--dur, 7s) ease-in-out var(--retraso-flotar, 0s) infinite alternate;
 }
-#vista-mural .burbuja.encima .burbuja-escala {
-  transform: perspective(700px) rotateX(var(--inclinar-x, 0deg)) rotateY(var(--inclinar-y, 0deg)) scale(${ESCALA_ENCIMA});
-  transition: transform .5s cubic-bezier(.17, 1.45, .35, 1);
+#vista-mural .burbuja.saliendo .burbuja-escala {
+  animation: burbuja-salir .65s cubic-bezier(.5, -0.4, .7, .4) forwards;
 }
-#vista-mural .burbuja-escala.choque { animation: burbuja-choque .55s cubic-bezier(.3, 1.6, .5, 1); }
-#vista-mural .burbuja.saliendo { pointer-events: none; }
-#vista-mural .burbuja.saliendo .burbuja-escala { animation: burbuja-salir .65s cubic-bezier(.5, -0.4, .7, .4) forwards; }
 
 @keyframes burbuja-entrar {
-  0%   { scale: 0; opacity: 0; filter: blur(8px); }
-  60%  { opacity: 1; filter: blur(0); }
-  100% { scale: 1; opacity: 1; filter: none; }
+  0%   { scale: 0; opacity: 0; }
+  60%  { opacity: 1; }
+  100% { scale: 1; opacity: 1; }
 }
 @keyframes burbuja-salir {
   0%   { scale: 1; opacity: 1; }
   30%  { scale: 1.12; opacity: 1; }
-  100% { scale: 0; opacity: 0; filter: blur(6px); }
+  100% { scale: 0; opacity: 0; }
 }
-@keyframes burbuja-choque {
-  0%   { scale: 1 1; }
-  30%  { scale: 1.07 .93; }
-  55%  { scale: .96 1.04; }
-  80%  { scale: 1.02 .98; }
-  100% { scale: 1 1; }
+@keyframes burbuja-flotar {
+  0%   { translate: 0 -5px; rotate: -1.5deg; }
+  50%  { translate: 3px 4px; rotate: 1deg; }
+  100% { translate: -2px -1px; rotate: -.5deg; }
 }
 
-/* Capa 3: el cristal líquido, con su flotación suave. */
+/* Capa 3: el cristal líquido. */
 #vista-mural .burbuja-cuerpo {
   position: relative;
   width: 100%; height: 100%;
@@ -628,11 +718,11 @@
   place-items: center;
   overflow: hidden;
   background:
-    radial-gradient(70% 70% at var(--mx, 30%) var(--my, 22%), rgb(255 255 255 / .30), transparent 55%),
+    radial-gradient(70% 70% at 30% 22%, rgb(255 255 255 / .30), transparent 55%),
     radial-gradient(90% 60% at 50% 115%, rgb(var(--rgb-claro) / .45), transparent 70%),
-    rgb(var(--rgb) / var(--alfa, .3));
-  -webkit-backdrop-filter: blur(16px) saturate(190%) brightness(1.1);
-  backdrop-filter: blur(16px) saturate(190%) brightness(1.1);
+    rgb(var(--rgb) / var(--alfa, .32));
+  -webkit-backdrop-filter: blur(10px) saturate(180%) brightness(1.1);
+  backdrop-filter: blur(10px) saturate(180%) brightness(1.1);
   border: 1px solid rgb(255 255 255 / .32);
   box-shadow:
     inset 0 1.5px 1px rgb(255 255 255 / .65),
@@ -641,8 +731,6 @@
     inset 0 0 22px rgb(var(--rgb-claro) / .25),
     0 22px 45px -18px rgb(var(--rgb) / .75),
     0 6px 16px rgb(0 0 0 / .28);
-  animation: burbuja-flotar var(--dur, 7s) ease-in-out var(--retraso, 0s) infinite alternate;
-  transition: box-shadow .5s ease, background .5s ease, border-color .5s ease;
 }
 @supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
   #vista-mural .burbuja-cuerpo { background-color: rgb(var(--rgb) / .75); }
@@ -656,14 +744,12 @@
   width: 46%; height: 26%;
   border-radius: 50%;
   background: linear-gradient(180deg, rgb(255 255 255 / .75), rgb(255 255 255 / 0));
-  filter: blur(2px);
   transform: rotate(-18deg);
   opacity: .8;
   pointer-events: none;
-  transition: opacity .5s, transform .6s cubic-bezier(.2, 1.4, .4, 1);
 }
 
-/* Borde iridiscente que gira (más vivo al pasar el ratón). */
+/* Borde iridiscente del círculo, girando despacio. */
 #vista-mural .burbuja-cuerpo::after {
   content: "";
   position: absolute;
@@ -676,33 +762,53 @@
   -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
   -webkit-mask-composite: xor;
   mask: linear-gradient(#000 0 0) content-box exclude, linear-gradient(#000 0 0);
-  opacity: .45;
+  opacity: .5;
   animation: burbuja-girar 14s linear infinite;
   pointer-events: none;
-  transition: opacity .5s;
-}
-
-#vista-mural .burbuja.encima .burbuja-cuerpo {
-  border-color: rgb(255 255 255 / .6);
-  box-shadow:
-    inset 0 2px 1px rgb(255 255 255 / .85),
-    inset 14px 18px 30px -12px rgb(255 255 255 / .75),
-    inset -14px -18px 32px -12px rgb(var(--rgb-osc) / .6),
-    inset 0 0 34px rgb(var(--rgb-claro) / .45),
-    0 0 0 6px rgb(var(--rgb-claro) / .12),
-    0 0 60px rgb(var(--rgb) / .65),
-    0 30px 60px -20px rgb(var(--rgb) / .9);
-  animation-play-state: paused;
-}
-#vista-mural .burbuja.encima .burbuja-cuerpo::before { opacity: 1; transform: rotate(-18deg) translate(4%, -6%) scale(1.08); }
-#vista-mural .burbuja.encima .burbuja-cuerpo::after { opacity: 1; animation-duration: 3.5s; }
-
-@keyframes burbuja-flotar {
-  0%   { transform: translateY(-5px) scale(1, 1);        border-radius: 50% 50% 50% 50% / 50% 50% 50% 50%; }
-  50%  { transform: translateY(4px)  scale(1.018, .982); border-radius: 52% 48% 51% 49% / 48% 52% 49% 51%; }
-  100% { transform: translateY(-2px) scale(.988, 1.012); border-radius: 49% 51% 48% 52% / 51% 49% 52% 48%; }
 }
 @keyframes burbuja-girar { to { transform: rotate(1turn); } }
+
+/* Sombra exterior de las formas (el recorte se comería un box-shadow). */
+#vista-mural .burbuja-sombra { display: none; }
+
+/* --- Formas distintas del círculo: el cristal se recorta con su contorno --- */
+#vista-mural .burbuja:not([data-forma="circulo"]) .burbuja-cuerpo {
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
+}
+#vista-mural .burbuja:not([data-forma="circulo"]) .burbuja-cuerpo::after { display: none; }
+#vista-mural .burbuja:not([data-forma="circulo"]) .burbuja-sombra {
+  display: block;
+  position: absolute;
+  inset: 6% 4% -4%;
+  border-radius: 50%;
+  background: radial-gradient(closest-side, rgb(var(--rgb) / .55), rgb(var(--rgb) / .2) 60%, transparent);
+}
+#vista-mural .burbuja-svg {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+  pointer-events: none;
+}
+#vista-mural [data-forma="corazon"]  .burbuja-cuerpo { clip-path: url(#mural-clip-corazon); }
+#vista-mural [data-forma="estrella"] .burbuja-cuerpo { clip-path: url(#mural-clip-estrella); }
+#vista-mural [data-forma="flor"]     .burbuja-cuerpo { clip-path: url(#mural-clip-flor); }
+#vista-mural [data-forma="hexagono"] .burbuja-cuerpo { clip-path: url(#mural-clip-hexagono); }
+#vista-mural [data-forma="cuadrada"] .burbuja-cuerpo { clip-path: url(#mural-clip-cuadrada); }
+
+#vista-mural [data-forma="corazon"] .burbuja-cuerpo::before { left: 12%; top: 11%; width: 30%; height: 16%; transform: rotate(-30deg); }
+#vista-mural [data-forma="estrella"] .burbuja-cuerpo::before { left: 36%; top: 14%; width: 22%; height: 16%; transform: rotate(-10deg); }
+#vista-mural [data-forma="cuadrada"] .burbuja-cuerpo::before { left: 10%; top: 6%; width: 50%; height: 20%; transform: rotate(-8deg); }
+
+/* Zona del texto según la forma. */
+#vista-mural [data-forma="corazon"]  .burbuja-contenido { width: 62%; height: 46%; top: -5%; }
+#vista-mural [data-forma="estrella"] .burbuja-contenido { width: 42%; height: 36%; top: 4%; }
+#vista-mural [data-forma="flor"]     .burbuja-contenido { width: 56%; height: 50%; }
+#vista-mural [data-forma="hexagono"] .burbuja-contenido { width: 68%; height: 58%; }
+#vista-mural [data-forma="cuadrada"] .burbuja-contenido { width: 78%; height: 72%; }
 
 /* Contenido: emoji y texto, grandes y legibles a distancia. */
 #vista-mural .burbuja-contenido {
@@ -725,10 +831,7 @@
   font-size: 1.7em;
   line-height: 1.05;
   font-family: "Apple Color Emoji", "Segoe UI Emoji", "Noto Color Emoji", sans-serif;
-  filter: drop-shadow(0 4px 8px rgb(0 0 0 / .3));
-  transition: transform .6s cubic-bezier(.2, 1.6, .4, 1);
 }
-#vista-mural .burbuja.encima .burbuja-emoji { transform: scale(1.15) rotate(-6deg); }
 #vista-mural .burbuja-texto {
   margin: 0;
   line-height: 1.16;
@@ -736,14 +839,14 @@
   overflow-wrap: anywhere;
   hyphens: auto;
   text-wrap: balance;
-  text-shadow: 0 1px 2px rgb(0 0 0 / .4), 0 0 20px rgb(var(--rgb-osc) / .55);
+  text-shadow: 0 1px 2px rgb(0 0 0 / .4), 0 0 18px rgb(var(--rgb-osc) / .55);
 }
 #vista-mural .burbuja-clara .burbuja-contenido { color: #1c0a2e; }
 #vista-mural .burbuja-clara .burbuja-texto { text-shadow: 0 1px 1px rgb(255 255 255 / .5); }
 
 @media (prefers-reduced-motion: reduce) {
-  #vista-mural .mural-fondo span,
-  #vista-mural .burbuja-cuerpo,
+  #vista-mural .mural-fondo,
+  #vista-mural .burbuja-escala,
   #vista-mural .burbuja-cuerpo::after { animation: none; }
 }
 `;
@@ -751,35 +854,35 @@
   // --- Datos de prueba (hasta que esté la API) ---------------------------------
 
   const MENSAJES_PRUEBA = [
-    { id: 1, texto: 'Ni una menos', emoji: '💜' },
+    { id: 1, texto: 'Ni una menos', emoji: '💜', forma: 'corazon' },
     { id: 2, texto: 'Vivas, libres y sin miedo', fuente: 'titular' },
     { id: 3, texto: 'Si nos tocan a una, nos tocan a todas', color: '#c13584', emoji: '✊' },
     { id: 4, texto: '<b>hola</b>' },
-    { id: 5, texto: 'Te creo', fuente: 'manuscrita', emoji: '🤝' },
-    { id: 6, texto: 'El silencio no nos protege', color: '#2ec4b6', fuente: 'elegante' },
-    { id: 7, texto: 'Juntas somos más fuertes', emoji: '🌸', fuente: 'redonda' },
-    { id: 8, texto: 'Llama al 016', color: '#ffd166', emoji: '📞', fuente: 'titular' },
-    { id: 9, texto: 'No es amor si duele', fuente: 'divertida' },
+    { id: 5, texto: 'Te creo', fuente: 'manuscrita', emoji: '🤝', forma: 'flor' },
+    { id: 6, texto: 'El silencio no nos protege', color: '#2ec4b6', fuente: 'elegante', forma: 'cuadrada' },
+    { id: 7, texto: 'Juntas somos más fuertes', emoji: '🌸', fuente: 'redonda', forma: 'flor' },
+    { id: 8, texto: 'Llama al 016', color: '#ffd166', emoji: '📞', fuente: 'titular', forma: 'estrella' },
+    { id: 9, texto: 'No es amor si duele', fuente: 'divertida', forma: 'corazon', color: '#e63946' },
     { id: 10, texto: 'Educar en igualdad es prevenir la violencia de género desde la infancia' },
     { id: 11, texto: 'Mi cuerpo, mi decisión', color: '#e63946', emoji: '🔥' },
-    { id: 12, texto: 'Hermana, yo sí te creo', emoji: '💜💜', fuente: 'manuscrita' },
+    { id: 12, texto: 'Hermana, yo sí te creo', emoji: '💜💜', fuente: 'manuscrita', forma: 'corazon' },
     { id: 13, texto: 'Por las que ya no están', color: '#5a189a', emoji: '🕯️' },
-    { id: 14, texto: 'Basta ya', fuente: 'titular', color: '#ff4d9d' },
-    { id: 15, texto: 'La igualdad se construye cada día, en casa, en clase y en la calle', fuente: 'redonda' },
+    { id: 14, texto: 'Basta ya', fuente: 'titular', color: '#ff4d9d', forma: 'hexagono' },
+    { id: 15, texto: 'La igualdad se construye cada día, en casa, en clase y en la calle', fuente: 'redonda', forma: 'cuadrada' },
     { id: 16, texto: 'Ni sumisas ni devotas: libres', fuente: 'divertida', emoji: '🦋' },
-    { id: 17, texto: 'Nunca estás sola', color: '#4cc9f0', emoji: '🫂' },
-    { id: 18, texto: 'No es no', fuente: 'maquina', emoji: '🚫' },
+    { id: 17, texto: 'Nunca estás sola', color: '#4cc9f0', emoji: '🫂', forma: 'corazon' },
+    { id: 18, texto: 'No es no', fuente: 'maquina', emoji: '🚫', forma: 'hexagono' },
     { id: 19, texto: 'Que el miedo cambie de bando', fuente: 'elegante', color: '#9d4edd' },
-    { id: 20, texto: 'Libres', emoji: '🕊️' },
+    { id: 20, texto: 'Libres', emoji: '🕊️', forma: 'estrella' },
     { id: 21, texto: 'Pide ayuda, hay salida', color: '#06d6a0', fuente: 'redonda' },
     { id: 22, texto: 'Rompe el silencio', emoji: '📢', fuente: 'titular' },
-    { id: 23, texto: 'Respeto', color: '#f72585', fuente: 'manuscrita' },
-    { id: 24, texto: 'Ninguna agresión sin respuesta', emoji: '🛡️' },
+    { id: 23, texto: 'Respeto', color: '#f72585', fuente: 'manuscrita', forma: 'corazon' },
+    { id: 24, texto: 'Ninguna agresión sin respuesta', emoji: '🛡️', forma: 'hexagono' },
     { id: 25, texto: 'Queremos llegar a casa tranquilas', fuente: 'elegante' },
     { id: 26, texto: 'El machismo mata', color: '#b5179e', fuente: 'titular' },
-    { id: 27, texto: 'Sororidad', emoji: '✨', fuente: 'divertida', color: '#c77dff' },
-    { id: 28, texto: 'Ni golpes que duelan ni palabras que hieran' },
-    { id: 29, texto: 'Aquí también se lucha', emoji: '🏫', color: '#7209b7' },
+    { id: 27, texto: 'Sororidad', emoji: '✨', fuente: 'divertida', color: '#c77dff', forma: 'estrella' },
+    { id: 28, texto: 'Ni golpes que duelan ni palabras que hieran', forma: 'cuadrada' },
+    { id: 29, texto: 'Aquí también se lucha', emoji: '🏫', color: '#7209b7', forma: 'flor' },
     { id: 30, texto: 'Ojalá un mundo donde este mural no haga falta', fuente: 'manuscrita', emoji: '🌍' },
   ];
   window.MURAL_PRUEBA = MENSAJES_PRUEBA;
