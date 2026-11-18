@@ -33,6 +33,11 @@
   let bucle = 0;
   let ultimoAmbiente = 0;
 
+  // Cada llamada a iniciarVideo() o pararVideo() sube este número. Un reintento
+  // pendiente solo reproduce si sigue siendo el último: así pararVideo() lo anula.
+  let intento = 0;
+  let espera = null;        // reintento pendiente: {alListo, resolver}
+
   // --- API pública -----------------------------------------------------------
 
   // Vuelve al segundo 0 y reproduce sin sonido. Devuelve la promesa de play()
@@ -40,6 +45,8 @@
   // cuando el vídeo esté listo; si tampoco, la T04 salta la vista.
   function iniciarVideo() {
     if (!video) return Promise.resolve(false);
+    cancelarEspera();
+    const mio = ++intento;
     prepararVideo();
     try {
       video.currentTime = 0;
@@ -49,18 +56,25 @@
     animarEntrada();
     actualizarProgreso();
     return reproducir().then(function (ok) {
+      if (mio !== intento) return false;   // se paró (o se reinició) mientras tanto
       if (ok || video.readyState >= HTMLMediaElement.HAVE_FUTURE_DATA) return ok;
       return new Promise(function (resolver) {
-        video.addEventListener('canplay', function () {
-          reproducir().then(resolver);
-        }, { once: true });
+        const alListo = function () {
+          espera = null;
+          if (mio !== intento) { resolver(false); return; }
+          reproducir().then(function (r) { resolver(r && mio === intento); });
+        };
+        espera = { alListo: alListo, resolver: resolver };
+        video.addEventListener('canplay', alListo, { once: true });
       });
     });
   }
 
-  // Para el vídeo y lo deja en el principio para la próxima vez.
+  // Para el vídeo, anula cualquier reintento pendiente y lo deja en el principio.
   function pararVideo() {
     if (!video) return;
+    intento++;
+    cancelarEspera();
     video.pause();
     try {
       video.currentTime = 0;
@@ -74,6 +88,13 @@
   window.pararVideo = pararVideo;
 
   // --- Reproducción ----------------------------------------------------------
+
+  function cancelarEspera() {
+    if (!espera) return;
+    video.removeEventListener('canplay', espera.alListo);
+    espera.resolver(false);
+    espera = null;
+  }
 
   function reproducir() {
     video.muted = true;   // sin sonido: los navegadores permiten el autoplay así
