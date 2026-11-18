@@ -16,8 +16,12 @@
 //
 // Datos de prueba: abre la pantalla con ?demo=mural para verlo sin la API.
 //
-// Los estilos del mural viven aquí (se inyectan una vez) para no tocar
-// estilos.css, que es de la T10. Todos van bajo #vista-mural.
+// Los estilos están en static/css/mural.css (todo bajo #vista-mural) y las fuentes
+// en static/fonts/, sin depender de la red. Este script carga el CSS solo, así que
+// no hace falta tocar pantalla.html.
+//
+// El QR (#qr, de la T10) es un obstáculo fijo: las burbujas rebotan contra él
+// igual que contra los bordes y nunca pasan por debajo.
 //
 // Rendimiento: en cada fotograma solo cambia `transform` (lo mueve la tarjeta
 // gráfica, sin recalcular la página). El tamaño real de cada burbuja solo se
@@ -38,10 +42,15 @@
     maquina: '"Space Mono", ui-monospace, Consolas, monospace',
   };
 
-  const URL_FUENTES = 'https://fonts.googleapis.com/css2' +
-    '?family=Bebas+Neue&family=Caveat:wght@600&family=Nunito:wght@700' +
-    '&family=Pacifico&family=Playfair+Display:wght@600&family=Poppins:wght@600' +
-    '&family=Space+Mono:wght@700&display=swap';
+  // static/css/mural.css, junto a este script (vale también si la app va en un subdirectorio).
+  const URL_CSS = (function () {
+    const src = document.currentScript && document.currentScript.src;
+    try {
+      return new URL('../css/mural.css', src || window.location.href).href;
+    } catch (_) {
+      return 'static/css/mural.css';
+    }
+  })();
 
   // Formas en coordenadas de 0 a 1 (se estiran a la caja de la burbuja).
   // El círculo no necesita trazado: es la burbuja clásica con border-radius.
@@ -85,6 +94,7 @@
   let alto = 0;
   let ultimoTiempo = 0;
   let iniciado = false;
+  let obstaculo = null;   // rectángulo del QR en coordenadas del mural: {x0, y0, x1, y1}
 
   // --- API pública -----------------------------------------------------------
 
@@ -144,8 +154,7 @@
     if (!contenedor) return false;
     iniciado = true;
 
-    inyectarEstilos();
-    cargarFuentes();
+    cargarEstilos();
     contenedor.classList.add('mural');
 
     const fondo = document.createElement('div');
@@ -156,10 +165,12 @@
     contenedor.append(fondo, crearDefinicionesSvg(), capa);
 
     medir();
+    window.addEventListener('resize', medir);
     if ('ResizeObserver' in window) {
-      new ResizeObserver(medir).observe(contenedor);
-    } else {
-      window.addEventListener('resize', medir);
+      const observador = new ResizeObserver(medir);
+      observador.observe(contenedor);
+      const qr = document.getElementById('qr');
+      if (qr) observador.observe(qr);   // p. ej. cuando termina de cargar la imagen del QR
     }
     if (document.fonts) {
       document.fonts.ready.then(reajustarTodas);
@@ -177,11 +188,81 @@
     ancho = nuevoAncho;
     alto = nuevoAlto;
     if (!ancho || !alto) return;   // vista oculta: se espera a que se muestre
-    if (cambio) recalcularTamanos();
+    const cambioQr = medirObstaculo();
+    if (cambio || cambioQr) recalcularTamanos();
     for (const b of burbujas.values()) {
       if (b.porAjustar) ajustarTexto(b);
       b.x = limitar(b.x, b.r, ancho - b.r);
       b.y = limitar(b.y, b.r, alto - b.r);
+      chocarConObstaculo(b, 0);
+    }
+  }
+
+  // Rectángulo del QR (con margen) dentro del mural. Si entre el QR y un borde no
+  // cabe una burbuja, se alarga hasta ese borde para que no se quede ninguna atrapada.
+  function medirObstaculo() {
+    const antes = JSON.stringify(obstaculo);
+    obstaculo = null;
+    const qr = document.getElementById('qr');
+    if (qr && !qr.hidden) {
+      const q = qr.getBoundingClientRect();
+      const c = contenedor.getBoundingClientRect();
+      if (q.width > 0 && q.height > 0) {
+        const menor = Math.min(ancho, alto);
+        const margen = menor * 0.02;
+        const hueco = menor * 0.15;
+        let x0 = q.left - c.left - margen;
+        let y0 = q.top - c.top - margen;
+        let x1 = q.right - c.left + margen;
+        let y1 = q.bottom - c.top + margen;
+        if (x0 < hueco) x0 = -1e4;
+        if (y0 < hueco) y0 = -1e4;
+        if (ancho - x1 < hueco) x1 = 1e4;
+        if (alto - y1 < hueco) y1 = 1e4;
+        if (x1 > 0 && y1 > 0 && x0 < ancho && y0 < alto) obstaculo = { x0: x0, y0: y0, x1: x1, y1: y1 };
+      }
+    }
+    return JSON.stringify(obstaculo) !== antes;
+  }
+
+  // Distancia con signo de un punto al obstáculo (negativa si está dentro).
+  function distanciaObstaculo(x, y) {
+    const o = obstaculo;
+    if (!o) return Infinity;
+    const dx = Math.max(o.x0 - x, 0, x - o.x1);
+    const dy = Math.max(o.y0 - y, 0, y - o.y1);
+    if (dx || dy) return Math.hypot(dx, dy);
+    return -Math.min(x - o.x0, o.x1 - x, y - o.y0, o.y1 - y);
+  }
+
+  // Rebote contra el rectángulo del QR, como contra un borde.
+  function chocarConObstaculo(b, t) {
+    const o = obstaculo;
+    if (!o) return;
+    const cx = limitar(b.x, o.x0, o.x1);
+    const cy = limitar(b.y, o.y0, o.y1);
+    let nx = b.x - cx;
+    let ny = b.y - cy;
+    let d = Math.hypot(nx, ny);
+    if (d >= b.r) return;
+    if (d > 1e-6) {
+      nx /= d;
+      ny /= d;
+    } else {
+      // El centro ha quedado dentro: sale por el lado más cercano.
+      const lados = [[b.x - o.x0, -1, 0], [o.x1 - b.x, 1, 0], [b.y - o.y0, 0, -1], [o.y1 - b.y, 0, 1]];
+      lados.sort(function (a, c) { return a[0] - c[0]; });
+      d = -lados[0][0];
+      nx = lados[0][1];
+      ny = lados[0][2];
+    }
+    b.x += nx * (b.r - d);
+    b.y += ny * (b.r - d);
+    const vn = b.vx * nx + b.vy * ny;
+    if (vn < 0) {
+      b.vx -= 2 * vn * nx;
+      b.vy -= 2 * vn * ny;
+      if (t) choque(b, t, nx, ny);
     }
   }
 
@@ -432,7 +513,12 @@
     for (const b of burbujas.values()) suma += b.peso * b.peso;
     if (!suma) return;
     const menor = Math.min(ancho, alto);
-    const base = limitar(Math.sqrt(CONFIG.ocupacion * ancho * alto / (Math.PI * suma)),
+    let area = ancho * alto;
+    if (obstaculo) {
+      area -= Math.max(0, Math.min(ancho, obstaculo.x1) - Math.max(0, obstaculo.x0)) *
+        Math.max(0, Math.min(alto, obstaculo.y1) - Math.max(0, obstaculo.y0));
+    }
+    const base = limitar(Math.sqrt(CONFIG.ocupacion * Math.max(area, ancho * alto * 0.4) / (Math.PI * suma)),
       menor * 0.06, menor * 0.21);
     for (const b of burbujas.values()) {
       b.rObjetivo = Math.min(base * b.peso, menor * 0.28);
@@ -452,7 +538,7 @@
     for (let i = 0; i < 60; i++) {
       const x = b.r + Math.random() * Math.max(1, ancho - 2 * b.r);
       const y = b.r + Math.random() * Math.max(1, alto - 2 * b.r);
-      let holgura = Infinity;
+      let holgura = distanciaObstaculo(x, y) - b.r;   // nunca encima del QR
       for (const o of burbujas.values()) {
         if (o === b || !o.colocada) continue;
         holgura = Math.min(holgura, Math.hypot(o.x - x, o.y - y) - o.r - b.r);
@@ -547,9 +633,12 @@
         else if (b.x > ancho - b.r) { b.x = ancho - b.r; b.vx = -Math.abs(b.vx); choque(b, t, 1, 0); }
         if (b.y < b.r) { b.y = b.r; b.vy = Math.abs(b.vy); choque(b, t, 0, 1); }
         else if (b.y > alto - b.r) { b.y = alto - b.r; b.vy = -Math.abs(b.vy); choque(b, t, 0, 1); }
+        chocarConObstaculo(b, t);
       }
       chocarEntreSi(lista, t);
     }
+    // Un choque entre burbujas puede empujar alguna hacia el QR: se corrige antes de pintar.
+    for (const b of lista) chocarConObstaculo(b, t);
 
     for (const b of lista) dibujar(b);
   }
@@ -621,235 +710,31 @@
 
   // --- Estilos ---------------------------------------------------------------
 
-  function cargarFuentes() {
-    if (document.getElementById('mural-fuentes')) return;
-    const enlace = document.createElement('link');
-    enlace.id = 'mural-fuentes';
+  // Carga static/css/mural.css una vez. Hasta que llega, las burbujas no se ven
+  // (lo pone el propio CSS); al llegar, se recalculan tamaños y textos.
+  function cargarEstilos() {
+    const listo = function () {
+      contenedor.classList.add('mural-listo');
+      medir();
+      recalcularTamanos();
+      reajustarTodas();
+    };
+    let enlace = document.getElementById('mural-estilos');
+    if (enlace) {
+      if (enlace.sheet) listo(); else enlace.addEventListener('load', listo);
+      return;
+    }
+    enlace = document.createElement('link');
+    enlace.id = 'mural-estilos';
     enlace.rel = 'stylesheet';
-    enlace.href = URL_FUENTES;
+    enlace.href = URL_CSS;
+    enlace.addEventListener('load', listo);
+    enlace.addEventListener('error', function () {
+      console.warn('No se pudo cargar mural.css');
+      contenedor.classList.add('mural-listo');
+    });
     document.head.appendChild(enlace);
   }
-
-  function inyectarEstilos() {
-    if (document.getElementById('mural-estilos')) return;
-    const estilo = document.createElement('style');
-    estilo.id = 'mural-estilos';
-    estilo.textContent = CSS;
-    document.head.appendChild(estilo);
-  }
-
-  const CSS = `
-#vista-mural.mural {
-  position: relative;
-  width: 100%;
-  height: 100vh;
-  height: 100dvh;
-  overflow: hidden;
-  isolation: isolate;
-  background: #13041f;
-}
-
-/* Fondo: manchas de color con degradados (sin filtros: no cuesta nada moverlas). */
-#vista-mural .mural-fondo {
-  position: absolute;
-  inset: -20%;
-  z-index: 0;
-  pointer-events: none;
-  background:
-    radial-gradient(32% 38% at 18% 20%, rgb(123 44 191 / .85), transparent 70%),
-    radial-gradient(30% 36% at 84% 30%, rgb(193 53 132 / .6), transparent 70%),
-    radial-gradient(38% 34% at 45% 92%, rgb(90 24 154 / .85), transparent 70%),
-    radial-gradient(18% 22% at 68% 62%, rgb(224 170 255 / .28), transparent 70%),
-    radial-gradient(26% 30% at 12% 70%, rgb(60 9 108 / .9), transparent 70%);
-  will-change: transform;
-  animation: mural-fondo 60s ease-in-out infinite alternate;
-}
-@keyframes mural-fondo {
-  0%   { transform: translate3d(0, 0, 0) rotate(0deg) scale(1); }
-  50%  { transform: translate3d(4%, 3%, 0) rotate(8deg) scale(1.06); }
-  100% { transform: translate3d(-3%, -2%, 0) rotate(-6deg) scale(.97); }
-}
-
-#vista-mural .mural-defs { position: absolute; width: 0; height: 0; overflow: hidden; }
-#vista-mural .mural-capa { position: absolute; inset: 0; z-index: 1; pointer-events: none; }
-
-/* Capa 1: posición y tamaño (los mueve el JS solo con transform). */
-#vista-mural .burbuja {
-  position: absolute;
-  left: 0; top: 0;
-  will-change: transform;
-  transform-origin: 50% 50%;
-}
-
-/* Capa 2: entrada, salida, flotación suave y efecto gelatina. */
-#vista-mural .burbuja-escala {
-  position: relative;
-  width: 100%; height: 100%;
-  animation:
-    burbuja-entrar 1.1s cubic-bezier(.2, 1.5, .4, 1) var(--retraso, 0s) backwards,
-    burbuja-flotar var(--dur, 7s) ease-in-out var(--retraso-flotar, 0s) infinite alternate;
-}
-#vista-mural .burbuja.saliendo .burbuja-escala {
-  animation: burbuja-salir .65s cubic-bezier(.5, -0.4, .7, .4) forwards;
-}
-
-@keyframes burbuja-entrar {
-  0%   { scale: 0; opacity: 0; }
-  60%  { opacity: 1; }
-  100% { scale: 1; opacity: 1; }
-}
-@keyframes burbuja-salir {
-  0%   { scale: 1; opacity: 1; }
-  30%  { scale: 1.12; opacity: 1; }
-  100% { scale: 0; opacity: 0; }
-}
-@keyframes burbuja-flotar {
-  0%   { translate: 0 -5px; rotate: -1.5deg; }
-  50%  { translate: 3px 4px; rotate: 1deg; }
-  100% { translate: -2px -1px; rotate: -.5deg; }
-}
-
-/* Capa 3: el cristal líquido. */
-#vista-mural .burbuja-cuerpo {
-  position: relative;
-  width: 100%; height: 100%;
-  border-radius: 50%;
-  display: grid;
-  place-items: center;
-  overflow: hidden;
-  background:
-    radial-gradient(70% 70% at 30% 22%, rgb(255 255 255 / .30), transparent 55%),
-    radial-gradient(90% 60% at 50% 115%, rgb(var(--rgb-claro) / .45), transparent 70%),
-    rgb(var(--rgb) / var(--alfa, .32));
-  -webkit-backdrop-filter: blur(10px) saturate(180%) brightness(1.1);
-  backdrop-filter: blur(10px) saturate(180%) brightness(1.1);
-  border: 1px solid rgb(255 255 255 / .32);
-  box-shadow:
-    inset 0 1.5px 1px rgb(255 255 255 / .65),
-    inset 12px 16px 26px -14px rgb(255 255 255 / .6),
-    inset -14px -18px 32px -12px rgb(var(--rgb-osc) / .7),
-    inset 0 0 22px rgb(var(--rgb-claro) / .25),
-    0 22px 45px -18px rgb(var(--rgb) / .75),
-    0 6px 16px rgb(0 0 0 / .28);
-}
-@supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
-  #vista-mural .burbuja-cuerpo { background-color: rgb(var(--rgb) / .75); }
-}
-
-/* Brillo especular arriba a la izquierda. */
-#vista-mural .burbuja-cuerpo::before {
-  content: "";
-  position: absolute;
-  left: 14%; top: 7%;
-  width: 46%; height: 26%;
-  border-radius: 50%;
-  background: linear-gradient(180deg, rgb(255 255 255 / .75), rgb(255 255 255 / 0));
-  transform: rotate(-18deg);
-  opacity: .8;
-  pointer-events: none;
-}
-
-/* Borde iridiscente del círculo, girando despacio. */
-#vista-mural .burbuja-cuerpo::after {
-  content: "";
-  position: absolute;
-  inset: 0;
-  border-radius: 50%;
-  padding: 2px;
-  background: conic-gradient(from 0deg,
-    rgb(255 255 255 / .9), rgb(var(--rgb-claro) / .2), rgb(255 160 230 / .7),
-    rgb(var(--rgb) / .1), rgb(160 220 255 / .7), rgb(255 255 255 / .9));
-  -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
-  -webkit-mask-composite: xor;
-  mask: linear-gradient(#000 0 0) content-box exclude, linear-gradient(#000 0 0);
-  opacity: .5;
-  animation: burbuja-girar 14s linear infinite;
-  pointer-events: none;
-}
-@keyframes burbuja-girar { to { transform: rotate(1turn); } }
-
-/* Sombra exterior de las formas (el recorte se comería un box-shadow). */
-#vista-mural .burbuja-sombra { display: none; }
-
-/* --- Formas distintas del círculo: el cristal se recorta con su contorno --- */
-#vista-mural .burbuja:not([data-forma="circulo"]) .burbuja-cuerpo {
-  border: 0;
-  border-radius: 0;
-  box-shadow: none;
-}
-#vista-mural .burbuja:not([data-forma="circulo"]) .burbuja-cuerpo::after { display: none; }
-#vista-mural .burbuja:not([data-forma="circulo"]) .burbuja-sombra {
-  display: block;
-  position: absolute;
-  inset: 6% 4% -4%;
-  border-radius: 50%;
-  background: radial-gradient(closest-side, rgb(var(--rgb) / .55), rgb(var(--rgb) / .2) 60%, transparent);
-}
-#vista-mural .burbuja-svg {
-  position: absolute;
-  inset: 0;
-  width: 100%;
-  height: 100%;
-  overflow: visible;
-  pointer-events: none;
-}
-#vista-mural [data-forma="corazon"]  .burbuja-cuerpo { clip-path: url(#mural-clip-corazon); }
-#vista-mural [data-forma="estrella"] .burbuja-cuerpo { clip-path: url(#mural-clip-estrella); }
-#vista-mural [data-forma="flor"]     .burbuja-cuerpo { clip-path: url(#mural-clip-flor); }
-#vista-mural [data-forma="hexagono"] .burbuja-cuerpo { clip-path: url(#mural-clip-hexagono); }
-#vista-mural [data-forma="cuadrada"] .burbuja-cuerpo { clip-path: url(#mural-clip-cuadrada); }
-
-#vista-mural [data-forma="corazon"] .burbuja-cuerpo::before { left: 12%; top: 11%; width: 30%; height: 16%; transform: rotate(-30deg); }
-#vista-mural [data-forma="estrella"] .burbuja-cuerpo::before { left: 36%; top: 14%; width: 22%; height: 16%; transform: rotate(-10deg); }
-#vista-mural [data-forma="cuadrada"] .burbuja-cuerpo::before { left: 10%; top: 6%; width: 50%; height: 20%; transform: rotate(-8deg); }
-
-/* Zona del texto según la forma. */
-#vista-mural [data-forma="corazon"]  .burbuja-contenido { width: 62%; height: 46%; top: -5%; }
-#vista-mural [data-forma="estrella"] .burbuja-contenido { width: 42%; height: 36%; top: 4%; }
-#vista-mural [data-forma="flor"]     .burbuja-contenido { width: 56%; height: 50%; }
-#vista-mural [data-forma="hexagono"] .burbuja-contenido { width: 68%; height: 58%; }
-#vista-mural [data-forma="cuadrada"] .burbuja-contenido { width: 78%; height: 72%; }
-
-/* Contenido: emoji y texto, grandes y legibles a distancia. */
-#vista-mural .burbuja-contenido {
-  position: relative;
-  z-index: 2;
-  width: 72%;
-  height: 66%;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  gap: .12em;
-  overflow: hidden;
-  text-align: center;
-  color: #fff;
-  font-family: var(--fuente);
-  font-size: var(--fs, 24px);
-}
-#vista-mural .burbuja-emoji {
-  font-size: 1.7em;
-  line-height: 1.05;
-  font-family: "Apple Color Emoji", "Segoe UI Emoji", "Noto Color Emoji", sans-serif;
-}
-#vista-mural .burbuja-texto {
-  margin: 0;
-  line-height: 1.16;
-  font-weight: 600;
-  overflow-wrap: anywhere;
-  hyphens: auto;
-  text-wrap: balance;
-  text-shadow: 0 1px 2px rgb(0 0 0 / .4), 0 0 18px rgb(var(--rgb-osc) / .55);
-}
-#vista-mural .burbuja-clara .burbuja-contenido { color: #1c0a2e; }
-#vista-mural .burbuja-clara .burbuja-texto { text-shadow: 0 1px 1px rgb(255 255 255 / .5); }
-
-@media (prefers-reduced-motion: reduce) {
-  #vista-mural .mural-fondo,
-  #vista-mural .burbuja-escala,
-  #vista-mural .burbuja-cuerpo::after { animation: none; }
-}
-`;
 
   // --- Datos de prueba (hasta que esté la API) ---------------------------------
 
