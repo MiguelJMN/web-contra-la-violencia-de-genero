@@ -29,6 +29,7 @@ Cada archivo ya existe con un comentario que indica qué tarea lo rellena.
 │   │   ├── participa.css   T06 · estilos del formulario
 │   │   └── admin.css       T03 · estilos del panel
 │   ├── js/
+│   │   ├── participa.js    T06 · contador de caracteres del formulario
 │   │   ├── pantalla.js     T04 · rotación de vistas y actualización
 │   │   ├── mural.js        T07 · pintarMural(mensajes)
 │   │   ├── video.js        T08 · iniciarVideo() / pararVideo()
