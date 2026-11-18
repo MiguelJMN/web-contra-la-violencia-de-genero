@@ -112,16 +112,19 @@ con las contraseñas `ADMIN_PASS` y `PANTALLA_PASS`.
 
 ## Moderación (T03)
 
-- **Filtro automático** (`bd/filtro.py`): todo se publica solo salvo lo que contiene una palabra
-  de la lista o datos personales (enlaces, correos, teléfonos, @usuarios). Eso queda **retenido**
-  y aparece en `/admin` para publicarlo igualmente o borrarlo. El filtro entiende tildes, plurales,
-  mayúsculas y trucos (`z0rra`, `p.u.t.a`); con `*` al final cubre todo lo que empiece igual.
-  La lista y las reglas se cambian desde el panel; la primera vez se carga `bd/filtros_iniciales.txt`.
+- **Foro:** por defecto las reflexiones **no salen hasta que moderación las aprueba** en `/admin`
+  («Pendientes de revisar»), porque pueden contar casos reales con nombres o lugares.
+  Relajarlo (que se publiquen solas si pasan el filtro) es una decisión del equipo desde el panel.
+- **Filtro automático** (`bd/filtro.py`): los mensajes del mural se publican solos salvo los que
+  contienen una palabra de la lista o datos personales (enlaces, correos, teléfonos, @usuarios).
+  Esos quedan pendientes en `/admin` para publicarlos igualmente o borrarlos. El filtro entiende
+  tildes, plurales, mayúsculas y trucos (`z0rra`, `p.u.t.a`); con `*` al final cubre todo lo que
+  empiece igual. La lista y las reglas se cambian desde el panel; la primera vez se carga
+  `bd/filtros_iniciales.txt`. El filtro **no** detecta nombres ni lugares.
 - **Avisos del público** (`/avisar`, enlazado desde `/participa` y `/gracias`): quien vea algo
-  inapropiado en la pantalla lo marca. Con 2 avisos (ajustable) se retira solo hasta que se revise.
-  Cada móvil cuenta una vez (cookie anónima; solo se guarda su hash).
-- **Aprobación manual del foro**: si el equipo prefiere aprobar las reflexiones una a una,
-  se activa en el panel («Aprobar a mano todas las reflexiones del foro»).
+  inapropiado en la pantalla lo marca y aparece en «Avisos del público» del panel. Por defecto
+  **no retiran nada solos**. La retirada automática al llegar a N avisos es un ajuste opcional y
+  apagado: la cookie anónima que evita contar dos veces el mismo móvil se puede saltar.
 - Los formularios del panel llevan un token CSRF derivado de `ADMIN_PASS`.
 - Una base de datos creada antes de T03 se actualiza sola al arrancar (`init_db()` añade lo que falte).
 

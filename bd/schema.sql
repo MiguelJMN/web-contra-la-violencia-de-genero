@@ -21,9 +21,9 @@ CREATE TABLE IF NOT EXISTS mural (
 );
 
 -- Reflexiones del foro (T01, T02, T03, T09).
--- Igual que el mural (T03): si pasan el filtro se aprueban solas (aprobado = 1).
--- Desde el panel se puede volver a la aprobación manual (ajuste foro_manual): entonces
--- llegan retenidas con el motivo «Pendiente de aprobación».
+-- Por defecto esperan a que moderación las apruebe (ajuste foro_manual = 1): llegan
+-- retenidas con el motivo «Pendiente de aprobación», o con el del filtro si lo activan.
+-- Si el equipo desactiva foro_manual desde el panel, las que pasan el filtro se aprueban solas.
 CREATE TABLE IF NOT EXISTS foro (
     id       INTEGER PRIMARY KEY AUTOINCREMENT,
     titulo   TEXT    NOT NULL CHECK (length(trim(titulo)) BETWEEN 1 AND 80),
@@ -40,8 +40,9 @@ CREATE INDEX IF NOT EXISTS idx_mural_visible_creado ON mural (visible, creado DE
 CREATE INDEX IF NOT EXISTS idx_foro_aprobado_creado ON foro (aprobado, creado DESC);
 
 -- Avisos del público (T03): alguien marca como inapropiado algo que está en pantalla.
--- Al llegar a N avisos (ajuste avisos_para_ocultar) se retira solo. Cuando moderación
--- decide (mantener o borrar) se eliminan los avisos de ese elemento.
+-- Por defecto solo lo marcan en el panel. Si se activa el ajuste retirar_por_avisos, al llegar
+-- a N avisos (avisos_para_ocultar) se retira solo. Cuando moderación decide (mantener o borrar)
+-- se eliminan los avisos de ese elemento.
 CREATE TABLE IF NOT EXISTS avisos (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
     tabla       TEXT    NOT NULL CHECK (tabla IN ('mural', 'foro')),

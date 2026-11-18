@@ -55,8 +55,15 @@ AJUSTES_POR_DEFECTO = {
     "correos": "1",              # ... correos electrónicos
     "telefonos": "1",            # ... números de teléfono
     "usuarios": "1",             # ... @usuarios de redes sociales
-    "avisos_para_ocultar": "2",  # avisos que retiran algo de la pantalla hasta que se revise
-    "foro_manual": "0",          # 1 = las reflexiones esperan aprobación manual (como al principio)
+    # Las reflexiones pueden contar casos reales con nombres o lugares que el filtro no detecta:
+    # por defecto no salen hasta que moderación las lee y las aprueba. Relajarlo es una
+    # decisión del equipo, desde el panel.
+    "foro_manual": "1",
+    # Los avisos del público solo marcan el elemento en el panel. Retirarlo solo al llegar a
+    # N avisos es opcional y va apagado: la cookie anónima se puede saltar y una sola persona
+    # podría vaciar la pantalla.
+    "retirar_por_avisos": "0",
+    "avisos_para_ocultar": "2",  # N, si se activa retirar_por_avisos
 }
 MOTIVOS_AVISO = {
     "odio": "Odio o discriminación",
@@ -64,7 +71,7 @@ MOTIVOS_AVISO = {
     "datos": "Nombres o datos personales",
     "otro": "Otro motivo",
 }
-MOTIVO_PENDIENTE = "Pendiente de aprobación (aprobación manual activada)"
+MOTIVO_PENDIENTE = "Pendiente de aprobación"
 
 
 # SQL fijo por tabla para el filtro y los avisos. "publicado" es visible (mural) o aprobado (foro).
@@ -344,10 +351,12 @@ def elemento_publico(tabla, id_):
 
 
 def registrar_aviso(tabla, id_, motivo, avisador):
-    """Guarda un aviso y, si se llega al umbral, retira el elemento de la pantalla.
+    """Guarda un aviso. Solo si está activado el ajuste retirar_por_avisos y se llega al
+    umbral, retira el elemento de la pantalla; si no, solo queda marcado en el panel.
     Devuelve 'nuevo', 'repetido' o 'no_visible'."""
     if motivo not in MOTIVOS_AVISO or elemento_publico(tabla, id_) is None:
         return "no_visible"
+    retirar = leer_ajustes()["retirar_por_avisos"] == "1"
     umbral = umbral_avisos()
     con = get_conexion()
     try:
@@ -358,7 +367,7 @@ def registrar_aviso(tabla, id_, motivo, avisador):
                 return "repetido"
             total = con.execute("SELECT COUNT(*) FROM avisos WHERE tabla = ? AND elemento_id = ?",
                                 (tabla, int(id_))).fetchone()[0]
-            if total >= umbral:
+            if retirar and total >= umbral:
                 con.execute(_SQL[tabla]["retirar_por_avisos"],
                             ("Retirado automáticamente al recibir %d avisos" % total, int(id_)))
         return "nuevo"

@@ -1,7 +1,8 @@
 {# T03 — Avisar de un mensaje inapropiado (GET /avisar, público, sin contraseña).
    Lista lo que está ahora en la pantalla (lo mismo que dan /api/mural y /api/foro) con un
    botón «Avisar» que lleva a avisar_elemento.html. Lo pinta pagina_avisar() en app.py.
-   Variables: mensajes, reflexiones, enviado (True tras enviar un aviso), error_message (opcional).
+   Variables: mensajes, reflexiones, enviado (True tras enviar un aviso), retirada_automatica
+   (ajuste retirar_por_avisos del panel) y error_message (opcional).
    Usa participa.css (mismo aspecto que el formulario) y avisar.css. #}
 <!DOCTYPE html>
 <html lang="es">
@@ -26,8 +27,9 @@
     {% elif enviado %}
     <p class="aviso aviso-ok" role="status">
       <strong>Gracias por avisar.</strong>
-      Moderación lo revisará. Si varias personas avisan del mismo mensaje, se retira de la pantalla
-      enseguida, antes incluso de que lo revisen.
+      Moderación lo revisará{% if retirada_automatica %}. Si varias personas avisan del mismo mensaje,
+      se retira de la pantalla enseguida, antes incluso de que lo revisen{% else %} y, si es inapropiado,
+      lo quitará de la pantalla{% endif %}.
     </p>
     {% endif %}
 

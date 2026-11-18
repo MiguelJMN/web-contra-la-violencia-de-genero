@@ -352,7 +352,8 @@ def create_app():
     def admin_ajustes():
         _comprobar_csrf()
         nuevos = {regla: "1" if request.form.get(regla) == "1" else "0"
-                  for regla in ("enlaces", "correos", "telefonos", "usuarios", "foro_manual")}
+                  for regla in ("enlaces", "correos", "telefonos", "usuarios", "foro_manual",
+                                "retirar_por_avisos")}
         umbral = request.form.get("avisos_para_ocultar", "")
         if umbral.isdigit() and 1 <= int(umbral) <= 50:
             nuevos["avisos_para_ocultar"] = str(int(umbral))
@@ -360,8 +361,9 @@ def create_app():
         return _volver_al_panel("ajustes", "guardados", 0, db.revisar_publicados())
 
     # --- T03: avisos del público (sin contraseña) ---------------------------
-    # Quien vea en la pantalla algo inapropiado lo busca en /avisar y lo marca.
-    # Con N avisos (ajuste del panel) se retira solo hasta que moderación lo revise.
+    # Quien vea en la pantalla algo inapropiado lo busca en /avisar y lo marca: aparece en
+    # «Avisos del público» del panel. Solo se retira solo si se activa en el panel
+    # (ajuste retirar_por_avisos, apagado por defecto).
 
     # Como mucho 60 avisos cada 10 minutos desde una misma IP (en un instituto
     # muchos móviles salen por la misma IP, por eso no es más bajo).
@@ -373,6 +375,7 @@ def create_app():
             mensajes=db.listar_mural(solo_visibles=True, limite=30),
             reflexiones=db.listar_foro(solo_aprobadas=True),
             enviado=request.args.get("enviado") == "1",
+            retirada_automatica=db.leer_ajustes()["retirar_por_avisos"] == "1",
             error_message=error_message,
         ), codigo
 

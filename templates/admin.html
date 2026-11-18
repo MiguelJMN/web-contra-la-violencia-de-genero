@@ -5,7 +5,8 @@
                {tabla: 'mural'|'foro', id, titulo, texto, creado, estado, motivo, avisos, motivos_aviso}
                estado: 'visible' (en pantalla) | 'retenido' (parado por el filtro) | 'oculto' (retirado)
     terminos   [{id, termino}] del filtro de palabras
-    ajustes    {enlaces, correos, telefonos, usuarios, foro_manual: '1'|'0', avisos_para_ocultar}
+    ajustes    {enlaces, correos, telefonos, usuarios, foro_manual, retirar_por_avisos: '1'|'0',
+                avisos_para_ocultar}
     csrf       token que lleva cada formulario (ver _token_csrf() en app.py)
     aviso      (opcional) {texto, tipo: 'ok'|'error'} de la última acción
     resaltar   (opcional) 'mural-5' o 'foro-3': la fila de la última acción
@@ -59,7 +60,7 @@
     <div class="adm-meta">
       <span class="adm-tipo">{{ 'Mural' if e.tabla == 'mural' else 'Foro' }}</span>
       {%- if e.estado == 'visible' %}<span class="adm-estado adm-estado-visible">En pantalla</span>
-      {%- elif e.estado == 'retenido' %}<span class="adm-estado adm-estado-retenido">Retenido</span>
+      {%- elif e.estado == 'retenido' %}<span class="adm-estado adm-estado-retenido">Pendiente</span>
       {%- else %}<span class="adm-estado adm-estado-oculto">Retirado</span>{% endif %}
       <span class="adm-id">#{{ e.id }}</span>
       {%- if e.creado %}<span aria-hidden="true">·</span><time datetime="{{ e.creado }}">{{ e.creado | fecha }}</time>{% endif %}
@@ -81,7 +82,7 @@
       {{ boton(e, 'publicar', 'Mantener' if e.estado == 'visible' else 'Volver a publicar', '', 'mantener') }}
       {{ boton(e, 'borrar', 'Borrar', 'adm-btn-peligro') }}
     {%- elif seccion == 'retenidos' %}
-      {{ boton(e, 'publicar', 'Publicar igualmente') }}
+      {{ boton(e, 'publicar', 'Aprobar' if e.tabla == 'foro' else 'Publicar igualmente') }}
       {{ boton(e, 'borrar', 'Borrar', 'adm-btn-peligro') }}
     {%- else %}
       {%- if e.estado == 'visible' %}{{ boton(e, 'ocultar', 'Retirar') }}{% else %}{{ boton(e, 'publicar', 'Publicar') }}{% endif %}
@@ -134,7 +135,7 @@
       <li><a class="adm-dato {{ 'adm-dato-peligro' if avisados }}" href="#avisos">
         <span class="adm-dato-num">{{ avisados | length }}</span><span class="adm-dato-txt">Avisos por revisar</span></a></li>
       <li><a class="adm-dato {{ 'adm-dato-alerta' if retenidos }}" href="#retenidos">
-        <span class="adm-dato-num">{{ retenidos | length }}</span><span class="adm-dato-txt">Retenidos por el filtro</span></a></li>
+        <span class="adm-dato-num">{{ retenidos | length }}</span><span class="adm-dato-txt">Pendientes de revisar</span></a></li>
       <li><a class="adm-dato" href="#publicado">
         <span class="adm-dato-num">{{ en_pantalla | length }}</span><span class="adm-dato-txt">En pantalla</span></a></li>
       <li><a class="adm-dato" href="#filtro">
@@ -147,7 +148,9 @@
         <header class="adm-panel-cab">
           <div>
             <h2 id="t-avisos">{{ icono('bandera') }} Avisos del público <span class="adm-cuenta">{{ avisados | length }}</span></h2>
-            <p>Publicaciones que alguien ha marcado como inapropiadas. Con {{ ajustes.avisos_para_ocultar }} {{ 'aviso' if ajustes.avisos_para_ocultar == '1' else 'avisos' }} se retiran solas de la pantalla.</p>
+            <p>Publicaciones que alguien ha marcado como inapropiadas.
+              {%- if ajustes.retirar_por_avisos == '1' %} Con {{ ajustes.avisos_para_ocultar }} {{ 'aviso' if ajustes.avisos_para_ocultar == '1' else 'avisos' }} se retiran solas de la pantalla hasta que decidas.
+              {%- else %} Siguen en la pantalla hasta que decidas: los avisos no retiran nada solos.{% endif %}</p>
           </div>
         </header>
         {% if avisados %}
@@ -157,18 +160,19 @@
         {% endif %}
       </section>
 
-      {# ---------- 2. Retenidos por el filtro (incluye reflexiones pendientes de aprobar) ---------- #}
+      {# ---------- 2. Pendientes: reflexiones por aprobar y lo que ha parado el filtro ---------- #}
       <section id="retenidos" class="adm-panel {{ 'adm-panel-alerta' if retenidos }}" aria-labelledby="t-retenidos">
         <header class="adm-panel-cab">
           <div>
-            <h2 id="t-retenidos">{{ icono('escudo') }} Retenidos por el filtro <span class="adm-cuenta">{{ retenidos | length }}</span></h2>
-            <p>No se han publicado. Si el filtro se ha equivocado, publícalos; si no, bórralos.</p>
+            <h2 id="t-retenidos">{{ icono('escudo') }} Pendientes de revisar <span class="adm-cuenta">{{ retenidos | length }}</span></h2>
+            <p>No salen en la pantalla hasta que los apruebes.
+              {%- if ajustes.foro_manual == '1' %} Aquí esperan todas las reflexiones del foro y{% else %} Aquí está{% endif %} lo que ha parado el filtro.</p>
           </div>
         </header>
         {% if retenidos %}
           <ul class="adm-filas">{% for e in retenidos %}{{ fila(e, 'retenidos') }}{% endfor %}</ul>
         {% else %}
-          {{ vacio('El filtro no ha retenido nada.') }}
+          {{ vacio('No hay nada pendiente.') }}
         {% endif %}
       </section>
     </div>
@@ -210,7 +214,7 @@
       <header class="adm-panel-cab">
         <div>
           <h2 id="t-filtro">Filtro automático</h2>
-          <p>Todo se publica solo, salvo lo que coincide con estas palabras o reglas: eso queda retenido para que decidas.</p>
+          <p>{{ 'Los mensajes del mural' if ajustes.foro_manual == '1' else 'Los mensajes y las reflexiones' }} se publican solos, salvo lo que coincide con estas palabras o reglas: eso queda pendiente para que decidas.</p>
         </div>
       </header>
       <div class="adm-filtro">
@@ -253,8 +257,14 @@
 
         <form class="adm-bloque adm-reglas" method="post" action="{{ url_for('admin_ajustes') }}">
           <input type="hidden" name="csrf" value="{{ csrf }}">
-          <h3>Reglas automáticas</h3>
-          <p class="adm-ayuda">Protegen la privacidad: retienen lo que pueda identificar o localizar a alguien.</p>
+          <h3>Ajustes</h3>
+          <label class="adm-check">
+            <input type="checkbox" name="foro_manual" value="1" {{ 'checked' if ajustes.foro_manual == '1' }}>
+            <span>Aprobar a mano todas las reflexiones del foro</span>
+          </label>
+          <p class="adm-ayuda">Recomendado: las reflexiones pueden contar casos reales con nombres o lugares que el filtro no detecta.</p>
+
+          <p class="adm-ayuda">Reglas de privacidad: retienen lo que pueda identificar o localizar a alguien.</p>
           {% for clave, texto in [('enlaces', 'enlaces (www…, http…, .com)'), ('correos', 'correos electrónicos'),
                                   ('telefonos', 'números de teléfono'), ('usuarios', '@usuarios de redes sociales')] %}
             <label class="adm-check">
@@ -262,16 +272,17 @@
               <span>Retener {{ texto }}</span>
             </label>
           {% endfor %}
+
+          <p class="adm-ayuda">Avisos del público: por defecto solo marcan la publicación aquí, en «Avisos del público».</p>
           <label class="adm-check">
-            <input type="checkbox" name="foro_manual" value="1" {{ 'checked' if ajustes.foro_manual == '1' }}>
-            <span>Aprobar a mano todas las reflexiones del foro</span>
+            <input type="checkbox" name="retirar_por_avisos" value="1" {{ 'checked' if ajustes.retirar_por_avisos == '1' }}>
+            <span>Retirar sola de la pantalla una publicación con muchos avisos</span>
           </label>
           <label class="adm-numero">
-            <span>Retirar de la pantalla al recibir</span>
+            <span>Cuántos avisos:</span>
             <input type="number" name="avisos_para_ocultar" min="1" max="50" inputmode="numeric" required value="{{ ajustes.avisos_para_ocultar }}">
-            <span>avisos</span>
           </label>
-          <p class="adm-ayuda">Lo retirado por avisos no se borra: espera en «Avisos del público» a que decidas.</p>
+          <p class="adm-ayuda">Mejor dejarlo apagado: una sola persona podría vaciar la pantalla enviando avisos. Lo retirado así no se borra: espera a que decidas.</p>
           <button type="submit" class="adm-btn adm-btn-principal">Guardar ajustes</button>
         </form>
       </div>
