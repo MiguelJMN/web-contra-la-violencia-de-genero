@@ -3,24 +3,65 @@
 -- Es idempotente: se puede ejecutar varias veces sin perder datos.
 
 -- Mensajes cortos del mural de burbujas (T01, T02, T03, T07).
--- Se publican directamente; la moderación solo los oculta (visible = 0).
+-- Se publican directamente si pasan el filtro automático (T03); si no, quedan
+-- retenidos (visible = 0, retenido = 1) hasta que moderación decida.
+-- Estados: visible = 1 → en pantalla · retenido = 1 → parado por el filtro ·
+--          visible = 0 y retenido = 0 → retirado por moderación o por avisos.
+-- motivo:   por qué está retenido o retirado (solo lo ve moderación).
+-- revisado: 1 si moderación lo publicó a mano; el filtro ya no lo vuelve a retirar.
+-- (En una base de datos anterior, bd/db.py añade retenido, motivo y revisado al arrancar.)
 CREATE TABLE IF NOT EXISTS mural (
-    id      INTEGER PRIMARY KEY AUTOINCREMENT,
-    texto   TEXT    NOT NULL CHECK (length(trim(texto)) BETWEEN 1 AND 200),
-    creado  TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%d %H:%M:%S', 'now')),
-    visible INTEGER NOT NULL DEFAULT 1 CHECK (visible IN (0, 1))
+    id       INTEGER PRIMARY KEY AUTOINCREMENT,
+    texto    TEXT    NOT NULL CHECK (length(trim(texto)) BETWEEN 1 AND 200),
+    creado   TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%d %H:%M:%S', 'now')),
+    visible  INTEGER NOT NULL DEFAULT 1 CHECK (visible IN (0, 1)),
+    retenido INTEGER NOT NULL DEFAULT 0 CHECK (retenido IN (0, 1)),
+    motivo   TEXT,
+    revisado INTEGER NOT NULL DEFAULT 0 CHECK (revisado IN (0, 1))
 );
 
 -- Reflexiones del foro (T01, T02, T03, T09).
--- No se muestran hasta que una persona moderadora las aprueba (aprobado = 1).
+-- Igual que el mural (T03): si pasan el filtro se aprueban solas (aprobado = 1).
+-- Desde el panel se puede volver a la aprobación manual (ajuste foro_manual): entonces
+-- llegan retenidas con el motivo «Pendiente de aprobación».
 CREATE TABLE IF NOT EXISTS foro (
     id       INTEGER PRIMARY KEY AUTOINCREMENT,
     titulo   TEXT    NOT NULL CHECK (length(trim(titulo)) BETWEEN 1 AND 80),
     texto    TEXT    NOT NULL CHECK (length(trim(texto))  BETWEEN 1 AND 1000),
     creado   TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%d %H:%M:%S', 'now')),
-    aprobado INTEGER NOT NULL DEFAULT 0 CHECK (aprobado IN (0, 1))
+    aprobado INTEGER NOT NULL DEFAULT 0 CHECK (aprobado IN (0, 1)),
+    retenido INTEGER NOT NULL DEFAULT 0 CHECK (retenido IN (0, 1)),
+    motivo   TEXT,
+    revisado INTEGER NOT NULL DEFAULT 0 CHECK (revisado IN (0, 1))
 );
 
 -- Índices para las consultas de la pantalla (/api/mural y /api/foro).
 CREATE INDEX IF NOT EXISTS idx_mural_visible_creado ON mural (visible, creado DESC);
 CREATE INDEX IF NOT EXISTS idx_foro_aprobado_creado ON foro (aprobado, creado DESC);
+
+-- Avisos del público (T03): alguien marca como inapropiado algo que está en pantalla.
+-- Al llegar a N avisos (ajuste avisos_para_ocultar) se retira solo. Cuando moderación
+-- decide (mantener o borrar) se eliminan los avisos de ese elemento.
+CREATE TABLE IF NOT EXISTS avisos (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    tabla       TEXT    NOT NULL CHECK (tabla IN ('mural', 'foro')),
+    elemento_id INTEGER NOT NULL,
+    motivo      TEXT    NOT NULL CHECK (motivo IN ('odio', 'acoso', 'datos', 'otro')),
+    avisador    TEXT    NOT NULL,  -- hash de una cookie anónima: el mismo móvil no cuenta dos veces
+    creado      TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%d %H:%M:%S', 'now')),
+    UNIQUE (tabla, elemento_id, avisador)
+);
+CREATE INDEX IF NOT EXISTS idx_avisos_elemento ON avisos (tabla, elemento_id);
+
+-- Palabras y expresiones del filtro automático (T03). Ver bd/filtro.py.
+CREATE TABLE IF NOT EXISTS filtros (
+    id      INTEGER PRIMARY KEY AUTOINCREMENT,
+    termino TEXT    NOT NULL UNIQUE,
+    creado  TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%d %H:%M:%S', 'now'))
+);
+
+-- Ajustes de moderación que se cambian desde el panel (T03).
+CREATE TABLE IF NOT EXISTS ajustes (
+    clave TEXT PRIMARY KEY,
+    valor TEXT NOT NULL
+);

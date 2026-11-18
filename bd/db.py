@@ -19,10 +19,13 @@ import os
 import sqlite3
 from pathlib import Path
 
+from bd.filtro import Filtro, limpiar_termino
+
 BD_DIR = Path(__file__).resolve().parent
 PROYECTO_DIR = BD_DIR.parent
 DB_PATH = Path(os.environ.get("DB_PATH") or PROYECTO_DIR / "datos" / "25n.db")
 SCHEMA_PATH = BD_DIR / "schema.sql"
+FILTROS_INICIALES_PATH = BD_DIR / "filtros_iniciales.txt"
 
 # Longitudes máximas (las mismas que en schema.sql y en el formulario de T06).
 MAX_MURAL_TEXTO = 200
@@ -30,20 +33,74 @@ MAX_FORO_TITULO = 80
 MAX_FORO_TEXTO = 1000
 
 # Lista permitida para el panel de administración (T03):
-# tabla -> {acción: (sentencia SQL, ...)}. Nada que llegue en la URL se
+# tabla -> {acción: sentencia SQL}. Nada que llegue en la URL se
 # mete en el SQL: solo se usa para elegir una de estas sentencias fijas.
+# Publicar a mano (mostrar/aprobar) marca revisado = 1: el filtro ya no lo vuelve a retirar.
 _ACCIONES = {
     "mural": {
-        "ocultar": "UPDATE mural SET visible = 0 WHERE id = ?",
-        "mostrar": "UPDATE mural SET visible = 1 WHERE id = ?",
+        "ocultar": "UPDATE mural SET visible = 0, retenido = 0, motivo = 'Retirado por moderación' WHERE id = ?",
+        "mostrar": "UPDATE mural SET visible = 1, retenido = 0, motivo = NULL, revisado = 1 WHERE id = ?",
         "borrar": "DELETE FROM mural WHERE id = ?",
     },
     "foro": {
-        "aprobar": "UPDATE foro SET aprobado = 1 WHERE id = ?",
-        "retirar": "UPDATE foro SET aprobado = 0 WHERE id = ?",
+        "aprobar": "UPDATE foro SET aprobado = 1, retenido = 0, motivo = NULL, revisado = 1 WHERE id = ?",
+        "retirar": "UPDATE foro SET aprobado = 0, retenido = 0, motivo = 'Retirado por moderación' WHERE id = ?",
         "borrar": "DELETE FROM foro WHERE id = ?",
     },
 }
+
+# --- T03: filtro automático y avisos -----------------------------------------
+AJUSTES_POR_DEFECTO = {
+    "enlaces": "1",              # retener lo que lleve enlaces
+    "correos": "1",              # ... correos electrónicos
+    "telefonos": "1",            # ... números de teléfono
+    "usuarios": "1",             # ... @usuarios de redes sociales
+    "avisos_para_ocultar": "2",  # avisos que retiran algo de la pantalla hasta que se revise
+    "foro_manual": "0",          # 1 = las reflexiones esperan aprobación manual (como al principio)
+}
+MOTIVOS_AVISO = {
+    "odio": "Odio o discriminación",
+    "acoso": "Insultos, acoso o amenazas",
+    "datos": "Nombres o datos personales",
+    "otro": "Otro motivo",
+}
+MOTIVO_PENDIENTE = "Pendiente de aprobación (aprobación manual activada)"
+
+
+# SQL fijo por tabla para el filtro y los avisos. "publicado" es visible (mural) o aprobado (foro).
+_SQL = {
+    "mural": {
+        "info": "PRAGMA table_info(mural)",
+        # Columnas añadidas por T03: init_db() crea las que falten en bases de datos anteriores.
+        "columnas": {
+            "retenido": "ALTER TABLE mural ADD COLUMN retenido INTEGER NOT NULL DEFAULT 0 CHECK (retenido IN (0, 1))",
+            "motivo": "ALTER TABLE mural ADD COLUMN motivo TEXT",
+            "revisado": "ALTER TABLE mural ADD COLUMN revisado INTEGER NOT NULL DEFAULT 0 CHECK (revisado IN (0, 1))",
+        },
+        "panel": ("SELECT id, NULL AS titulo, texto, creado, visible AS publicado, retenido, motivo "
+                  "FROM mural"),
+        "publico": "SELECT id, NULL AS titulo, texto FROM mural WHERE id = ? AND visible = 1",
+        "revisar": "SELECT id, '' AS titulo, texto FROM mural WHERE visible = 1 AND revisado = 0",
+        "retener": "UPDATE mural SET visible = 0, retenido = 1, motivo = ? WHERE id = ? AND visible = 1",
+        "retirar_por_avisos": "UPDATE mural SET visible = 0, retenido = 0, motivo = ? WHERE id = ? AND visible = 1",
+    },
+    "foro": {
+        "info": "PRAGMA table_info(foro)",
+        # Columnas añadidas por T03: init_db() crea las que falten en bases de datos anteriores.
+        "columnas": {
+            "retenido": "ALTER TABLE foro ADD COLUMN retenido INTEGER NOT NULL DEFAULT 0 CHECK (retenido IN (0, 1))",
+            "motivo": "ALTER TABLE foro ADD COLUMN motivo TEXT",
+            "revisado": "ALTER TABLE foro ADD COLUMN revisado INTEGER NOT NULL DEFAULT 0 CHECK (revisado IN (0, 1))",
+        },
+        "panel": ("SELECT id, titulo, texto, creado, aprobado AS publicado, retenido, motivo "
+                  "FROM foro"),
+        "publico": "SELECT id, titulo, texto FROM foro WHERE id = ? AND aprobado = 1",
+        "revisar": "SELECT id, titulo, texto FROM foro WHERE aprobado = 1 AND revisado = 0",
+        "retener": "UPDATE foro SET aprobado = 0, retenido = 1, motivo = ? WHERE id = ? AND aprobado = 1",
+        "retirar_por_avisos": "UPDATE foro SET aprobado = 0, retenido = 0, motivo = ? WHERE id = ? AND aprobado = 1",
+    },
+}
+TABLAS = tuple(_SQL)
 
 
 def get_conexion():
@@ -69,8 +126,36 @@ def init_db():
         if modo.lower() != "wal":
             con.execute("PRAGMA journal_mode = WAL")
         con.executescript(SCHEMA_PATH.read_text(encoding="utf-8"))
+        _migrar_t03(con)
     finally:
         con.close()
+
+
+def _migrar_t03(con):
+    """Añade lo de T03 a una base de datos creada antes (columnas, ajustes y filtro inicial)."""
+    with con:
+        for tabla in TABLAS:
+            existentes = {f["name"] for f in con.execute(_SQL[tabla]["info"])}
+            nuevas = [c for c in _SQL[tabla]["columnas"] if c not in existentes]
+            for columna in nuevas:
+                con.execute(_SQL[tabla]["columnas"][columna])
+            if tabla == "foro" and "retenido" in nuevas:
+                # Las reflexiones que esperaban aprobación siguen esperándola en el panel.
+                con.execute("UPDATE foro SET retenido = 1, motivo = ? WHERE aprobado = 0", (MOTIVO_PENDIENTE,))
+        for clave, valor in AJUSTES_POR_DEFECTO.items():
+            con.execute("INSERT OR IGNORE INTO ajustes (clave, valor) VALUES (?, ?)", (clave, valor))
+        if con.execute("SELECT 1 FROM ajustes WHERE clave = 'filtros_cargados'").fetchone() is None:
+            for termino in _leer_filtros_iniciales():
+                con.execute("INSERT OR IGNORE INTO filtros (termino) VALUES (?)", (termino,))
+            con.execute("INSERT INTO ajustes (clave, valor) VALUES ('filtros_cargados', '1')")
+
+
+def _leer_filtros_iniciales():
+    if not FILTROS_INICIALES_PATH.exists():
+        return []
+    lineas = FILTROS_INICIALES_PATH.read_text(encoding="utf-8").splitlines()
+    terminos = (limpiar_termino(l) for l in lineas if l.strip() and not l.lstrip().startswith("#"))
+    return [t for t in terminos if t]
 
 
 def _ejecutar(sql, params=()):
@@ -94,15 +179,31 @@ def _consultar(sql, params=()):
 # --- Escritura pública (T01) -------------------------------------------------
 
 def insertar_mural(texto):
-    """Guarda un mensaje del mural y devuelve su id."""
-    return _ejecutar("INSERT INTO mural (texto) VALUES (?)", (texto.strip(),)).lastrowid
+    """Guarda un mensaje del mural y devuelve su id.
+
+    T03: si no pasa el filtro automático se guarda retenido (no sale en pantalla).
+    """
+    texto = texto.strip()
+    motivo = filtro_actual().motivo(texto)
+    return _ejecutar(
+        "INSERT INTO mural (texto, visible, retenido, motivo) VALUES (?, ?, ?, ?)",
+        (texto, 0 if motivo else 1, 1 if motivo else 0, motivo),
+    ).lastrowid
 
 
 def insertar_foro(titulo, texto):
-    """Guarda una reflexión del foro (pendiente de aprobar) y devuelve su id."""
+    """Guarda una reflexión del foro y devuelve su id.
+
+    T03: si pasa el filtro se aprueba sola; si no (o si la aprobación manual está
+    activada) se guarda retenida para que moderación decida.
+    """
+    titulo, texto = titulo.strip(), texto.strip()
+    motivo = filtro_actual().motivo(titulo, texto)
+    if motivo is None and leer_ajustes()["foro_manual"] == "1":
+        motivo = MOTIVO_PENDIENTE
     return _ejecutar(
-        "INSERT INTO foro (titulo, texto) VALUES (?, ?)",
-        (titulo.strip(), texto.strip()),
+        "INSERT INTO foro (titulo, texto, aprobado, retenido, motivo) VALUES (?, ?, ?, ?, ?)",
+        (titulo, texto, 0 if motivo else 1, 1 if motivo else 0, motivo),
     ).lastrowid
 
 
@@ -141,12 +242,160 @@ def aplicar_accion(tabla, id_, accion):
     """Aplica una acción de moderación. Devuelve True si cambió alguna fila.
 
     Lanza ValueError si la tabla o la acción no están en la lista permitida.
+    Cualquier decisión de moderación cierra los avisos pendientes de ese elemento.
     """
     try:
         sql = _ACCIONES[tabla][accion]
     except KeyError:
         raise ValueError(f"Acción no permitida: {tabla}/{accion}") from None
-    return _ejecutar(sql, (int(id_),)).rowcount > 0
+    con = get_conexion()
+    try:
+        with con:
+            cambiadas = con.execute(sql, (int(id_),)).rowcount
+            con.execute("DELETE FROM avisos WHERE tabla = ? AND elemento_id = ?", (tabla, int(id_)))
+        return cambiadas > 0
+    finally:
+        con.close()
+
+
+# --- T03: ajustes y filtro automático ---------------------------------------
+
+def leer_ajustes():
+    ajustes = dict(AJUSTES_POR_DEFECTO)
+    ajustes.update({f["clave"]: f["valor"] for f in _consultar("SELECT clave, valor FROM ajustes")})
+    return ajustes
+
+
+def guardar_ajustes(nuevos):
+    """Guarda solo las claves conocidas (AJUSTES_POR_DEFECTO)."""
+    con = get_conexion()
+    try:
+        with con:
+            for clave, valor in nuevos.items():
+                if clave in AJUSTES_POR_DEFECTO:
+                    con.execute("INSERT INTO ajustes (clave, valor) VALUES (?, ?) "
+                                "ON CONFLICT(clave) DO UPDATE SET valor = excluded.valor", (clave, str(valor)))
+    finally:
+        con.close()
+
+
+def umbral_avisos():
+    valor = leer_ajustes()["avisos_para_ocultar"]
+    return max(1, int(valor)) if valor.isdigit() else int(AJUSTES_POR_DEFECTO["avisos_para_ocultar"])
+
+
+def listar_filtros():
+    return _consultar("SELECT id, termino FROM filtros ORDER BY termino")
+
+
+def termino_filtro(id_):
+    filas = _consultar("SELECT termino FROM filtros WHERE id = ?", (int(id_),))
+    return filas[0]["termino"] if filas else None
+
+
+def anadir_filtro(termino):
+    """Devuelve (id, None) si se añade, o (None, 'invalido' | 'repetido')."""
+    limpio = limpiar_termino(termino)
+    if limpio is None:
+        return None, "invalido"
+    try:
+        return _ejecutar("INSERT INTO filtros (termino) VALUES (?)", (limpio,)).lastrowid, None
+    except sqlite3.IntegrityError:
+        return None, "repetido"
+
+
+def quitar_filtro(id_):
+    _ejecutar("DELETE FROM filtros WHERE id = ?", (int(id_),))
+
+
+def filtro_actual():
+    ajustes = leer_ajustes()
+    return Filtro([f["termino"] for f in listar_filtros()],
+                  enlaces=ajustes["enlaces"] == "1", correos=ajustes["correos"] == "1",
+                  telefonos=ajustes["telefonos"] == "1", usuarios=ajustes["usuarios"] == "1")
+
+
+def revisar_publicados():
+    """Pasa el filtro actual por lo que ya está en pantalla (salvo lo publicado a mano).
+    Devuelve cuántos elementos se han retirado."""
+    filtro = filtro_actual()
+    retirados = 0
+    con = get_conexion()
+    try:
+        with con:
+            for tabla in TABLAS:
+                for fila in con.execute(_SQL[tabla]["revisar"]).fetchall():
+                    motivo = filtro.motivo(fila["titulo"], fila["texto"])
+                    if motivo:
+                        retirados += con.execute(_SQL[tabla]["retener"], (motivo, fila["id"])).rowcount
+    finally:
+        con.close()
+    return retirados
+
+
+# --- T03: avisos del público -------------------------------------------------
+
+def elemento_publico(tabla, id_):
+    """El mensaje o la reflexión si está en pantalla; si no, None."""
+    if tabla not in _SQL:
+        return None
+    filas = _consultar(_SQL[tabla]["publico"], (int(id_),))
+    return dict(filas[0], tabla=tabla) if filas else None
+
+
+def registrar_aviso(tabla, id_, motivo, avisador):
+    """Guarda un aviso y, si se llega al umbral, retira el elemento de la pantalla.
+    Devuelve 'nuevo', 'repetido' o 'no_visible'."""
+    if motivo not in MOTIVOS_AVISO or elemento_publico(tabla, id_) is None:
+        return "no_visible"
+    umbral = umbral_avisos()
+    con = get_conexion()
+    try:
+        with con:
+            cur = con.execute("INSERT OR IGNORE INTO avisos (tabla, elemento_id, motivo, avisador) "
+                              "VALUES (?, ?, ?, ?)", (tabla, int(id_), motivo, avisador))
+            if cur.rowcount == 0:
+                return "repetido"
+            total = con.execute("SELECT COUNT(*) FROM avisos WHERE tabla = ? AND elemento_id = ?",
+                                (tabla, int(id_))).fetchone()[0]
+            if total >= umbral:
+                con.execute(_SQL[tabla]["retirar_por_avisos"],
+                            ("Retirado automáticamente al recibir %d avisos" % total, int(id_)))
+        return "nuevo"
+    finally:
+        con.close()
+
+
+# --- T03: datos del panel ----------------------------------------------------
+
+def listar_para_panel():
+    """Mural y foro juntos, más recientes primero, con su estado y sus avisos:
+    {tabla, id, titulo, texto, creado, estado ('visible'|'retenido'|'oculto'), motivo,
+     avisos, motivos_aviso [(texto, n), ...]}"""
+    avisos = {}
+    for f in _consultar("SELECT tabla, elemento_id, motivo, COUNT(*) AS n FROM avisos "
+                        "GROUP BY tabla, elemento_id, motivo"):
+        avisos.setdefault((f["tabla"], f["elemento_id"]), []).append((MOTIVOS_AVISO.get(f["motivo"], f["motivo"]), f["n"]))
+    elementos = []
+    for tabla in TABLAS:
+        for e in _consultar(_SQL[tabla]["panel"]):
+            e["tabla"] = tabla
+            e["estado"] = "visible" if e["publicado"] else ("retenido" if e["retenido"] else "oculto")
+            motivos = sorted(avisos.get((tabla, e["id"]), []), key=lambda m: -m[1])
+            e["motivos_aviso"] = motivos
+            e["avisos"] = sum(n for _, n in motivos)
+            elementos.append(e)
+    elementos.sort(key=lambda e: (e["creado"] or "", e["id"]), reverse=True)
+    return elementos
+
+
+def contadores():
+    """Lo pendiente de revisar: elementos con avisos y elementos retenidos."""
+    return {
+        "avisos": _consultar("SELECT COUNT(*) AS n FROM (SELECT DISTINCT tabla, elemento_id FROM avisos)")[0]["n"],
+        "retenidos": _consultar("SELECT (SELECT COUNT(*) FROM mural WHERE retenido = 1) + "
+                                "(SELECT COUNT(*) FROM foro WHERE retenido = 1) AS n")[0]["n"],
+    }
 
 
 if __name__ == "__main__":
